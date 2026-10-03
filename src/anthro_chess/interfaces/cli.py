@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from anthro_chess import __version__
 from anthro_chess.application_logging import (
+    APPLICATION_LOGGER_NAME,
     DEFAULT_LOG_LEVEL,
     LOG_LEVEL_NAMES,
     configure_application_logging,
@@ -4094,8 +4095,18 @@ def _run_train(arguments: argparse.Namespace) -> int:
         TrainingError,
         run_training,
     )
+    from anthro_chess.training.distributed import (
+        DistributedError,
+        launched_parallelism,
+    )
 
     try:
+        parallel = launched_parallelism()
+        if not parallel.primary:
+            # Every rank runs the same loop, so one of them narrates it and the
+            # rest speak only when something is wrong.
+            application = logging.getLogger(APPLICATION_LOGGER_NAME)
+            application.setLevel(max(application.level, logging.WARNING))
         resolved = load_config(
             TrainingConfig,
             path=arguments.config,
@@ -4130,10 +4141,12 @@ def _run_train(arguments: argparse.Namespace) -> int:
     except TrainingDiverged as error:
         print(f"anthro train: {error}", file=sys.stderr)
         return 3
-    except (ConfigError, ResultsStoreError, TrainingError) as error:
+    except (ConfigError, DistributedError, ResultsStoreError, TrainingError) as error:
         print(f"anthro train: {error}", file=sys.stderr)
         return 2
 
+    if not parallel.primary:
+        return 0
     print(f"Completed {result.steps} optimizer step(s).")
     print(f"Run: {result.run_path}")
     print(f"Metrics: {result.metrics_path}")

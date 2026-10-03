@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import tomllib
 from collections.abc import Callable, Mapping
 from io import StringIO
@@ -41,6 +43,7 @@ from anthro_chess.training.devices import (
     STRICT_DETERMINISM_BACKENDS,
     DeviceCapabilities,
 )
+from anthro_chess.training.distributed import SINGLE_PROCESS, DataParallel
 from anthro_chess.training.runner import (
     _EXECUTION_COMPATIBILITY_KEYS,
     _EXECUTION_PROVENANCE_KEYS,
@@ -121,6 +124,7 @@ def test_ordinary_runner_updates_model_and_writes_reproducible_records(
         "parameter_dtype": "float32",
         "determinism": "strict",
         "gradient_accumulation_steps": 1,
+        "world_size": 1,
         "fused_optimizer": False,
         "matmul_precision": "highest",
         "compilation": "off",
@@ -308,6 +312,7 @@ def test_resume_latest_restores_exact_training_state(tmp_path: Path) -> None:
         "parameter_dtype": "float32",
         "phase_profiling": False,
         "precision": "float32",
+        "world_size": 1,
     }
 
     run_record = json.loads(resumed.run_path.read_text(encoding="utf-8"))
@@ -405,7 +410,7 @@ def test_every_recorded_execution_setting_has_exactly_one_declared_role(
         ),
     ).value
 
-    record = _execution_record(config, torch.device("cpu"))
+    record = _execution_record(config, torch.device("cpu"), SINGLE_PROCESS)
 
     compatibility = set(_EXECUTION_COMPATIBILITY_KEYS)
     provenance = set(_EXECUTION_PROVENANCE_KEYS)
@@ -1093,6 +1098,7 @@ def test_accelerator_checkpoint_cross_backend_and_original_device_resume(
         "parameter_dtype": "float32",
         "phase_profiling": False,
         "precision": "float32",
+        "world_size": 1,
     }
     assert set(accelerator_checkpoint["rng_state"]) == {
         "python",
@@ -1330,6 +1336,254 @@ def test_gradient_accumulation_uses_multiple_batches_per_optimizer_step(
     assert all(record["transfer_seconds"] >= 0.0 for record in records)
     assert all(record["compute_seconds"] >= 0.0 for record in records)
     assert all(record["peak_allocated_memory_bytes"] is None for record in records)
+
+
+def _launch_ranks(
+    config: Path,
+    output_directory: Path,
+    ranks: int,
+    *,
+    results: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Train through the command line under `torchrun`, as a real launch does."""
+
+    recording = (
+        ["--no-record"]
+        if results is None
+        else [
+            "--store",
+            str(results / "store"),
+            "--detail-root",
+            str(results / "detail"),
+        ]
+    )
+    launched = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
+            "--standalone",
+            f"--nproc-per-node={ranks}",
+            "-m",
+            "anthro_chess",
+            "train",
+            "--config",
+            str(config),
+            *recording,
+            "--output-directory",
+            str(output_directory),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=600,
+    )
+    assert launched.returncode == 0, launched.stderr
+    return launched
+
+
+def _data_parallel_config(
+    directory: Path,
+    prepared: Any,
+    *,
+    steps: int,
+    resume_from: Path | None = None,
+    device: str = "cpu",
+) -> Path:
+    # Nothing draws randomness, so a rank's own stream cannot move the weights
+    # and what is left between one process and two is summation order.
+    return _write_training_config(
+        directory,
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        run_name="ranks",
+        validation=True,
+        steps=steps,
+        checkpoint_every_steps=2,
+        resume_from=resume_from,
+        device=device,
+        train_batch="positions_per_batch = 8",
+        extra="gradient_accumulation_steps = 2\n",
+        model_extra="history_dropout = 0.0",
+    )
+
+
+def test_two_ranks_train_what_one_process_trains_and_write_it_once(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    config = _data_parallel_config(tmp_path / "config", prepared, steps=4)
+
+    alone_store = ResultsStore(tmp_path / "alone-results")
+    alone = run_training(
+        load_config(TrainingConfig, path=config),
+        output_directory=tmp_path / "alone",
+        store=alone_store,
+    )
+    launched = _launch_ranks(config, tmp_path / "pair", 2, results=tmp_path)
+
+    pair = tmp_path / "pair"
+    assert launched.stdout.count("Completed 4 optimizer step(s).") == 1
+    recorded = ResultsStore(tmp_path / "store").results()
+    assert recorded
+    assert sorted(
+        (envelope.kind, envelope.checkpoint.label) for envelope in recorded
+    ) == sorted(
+        (envelope.kind, envelope.checkpoint.label.replace("alone", "pair"))
+        for envelope in alone_store.results()
+    )
+    assert len(list((tmp_path / "detail").rglob("*.json*"))) == 1
+    assert sorted(path.name for path in (pair / "checkpoints").iterdir()) == [
+        "latest.json",
+        "step-00000002.pt",
+        "step-00000004.pt",
+    ]
+    alone_records = _metric_records(alone.metrics_path)
+    pair_records = _metric_records(pair / "metrics.jsonl")
+    assert [record["global_step"] for record in pair_records] == [1, 2, 3, 4]
+    assert [record["processed_positions"] for record in pair_records] == [
+        record["processed_positions"] for record in alone_records
+    ]
+    assert [record["move_loss"] for record in pair_records] == pytest.approx(
+        [record["move_loss"] for record in alone_records], rel=1e-5
+    )
+
+    alone_checkpoint = load_training_checkpoint(alone.checkpoint_path)
+    pair_checkpoint = load_training_checkpoint(pair / "checkpoints/step-00000004.pt")
+    assert pair_checkpoint["loader_state"] == alone_checkpoint["loader_state"]
+    assert pair_checkpoint["counters"] == alone_checkpoint["counters"]
+    assert (
+        pair_checkpoint["model_state"].keys() == alone_checkpoint["model_state"].keys()
+    )
+    for name, value in alone_checkpoint["model_state"].items():
+        torch.testing.assert_close(pair_checkpoint["model_state"][name], value)
+    assert training_identity_sha256(
+        pair_checkpoint["compatibility"]
+    ) == training_identity_sha256(alone_checkpoint["compatibility"])
+
+    record = json.loads((pair / "run.json").read_text(encoding="utf-8"))
+    assert record["complete"] is True
+    assert record["execution"]["world_size"] == 2
+    assert record["validation"] is not None
+
+
+def test_a_two_rank_checkpoint_resumes_under_either_world_size(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    _launch_ranks(
+        _data_parallel_config(tmp_path / "trunk-config", prepared, steps=2),
+        tmp_path / "trunk",
+        2,
+    )
+    trunk = tmp_path / "trunk/checkpoints/step-00000002.pt"
+    _launch_ranks(
+        _data_parallel_config(tmp_path / "uninterrupted-config", prepared, steps=4),
+        tmp_path / "uninterrupted",
+        2,
+    )
+    continued = _data_parallel_config(
+        tmp_path / "continued-config", prepared, steps=4, resume_from=trunk
+    )
+    _launch_ranks(continued, tmp_path / "continued-pair", 2)
+    alone = run_training(
+        load_config(TrainingConfig, path=continued),
+        output_directory=tmp_path / "continued-alone",
+    )
+
+    def final(run: Path) -> dict[str, Any]:
+        return load_training_checkpoint(run / "checkpoints/step-00000004.pt")
+
+    uninterrupted = final(tmp_path / "uninterrupted")
+    pair = final(tmp_path / "continued-pair")
+    assert all(
+        torch.equal(pair["model_state"][name], value)
+        for name, value in uninterrupted["model_state"].items()
+    )
+    assert pair["loader_state"] == uninterrupted["loader_state"]
+    for name, value in uninterrupted["model_state"].items():
+        torch.testing.assert_close(
+            final(alone.run_path.parent)["model_state"][name], value
+        )
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(
+    torch.cuda.device_count() < 2, reason="needs two CUDA devices on one host"
+)
+def test_two_cards_train_checkpoint_and_resume_what_one_card_trains(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    _launch_ranks(
+        _data_parallel_config(tmp_path / "trunk", prepared, steps=2, device="cuda"),
+        tmp_path / "trunk",
+        2,
+    )
+    continued = _data_parallel_config(
+        tmp_path / "continued",
+        prepared,
+        steps=4,
+        device="cuda",
+        resume_from=tmp_path / "trunk/checkpoints/step-00000002.pt",
+    )
+    _launch_ranks(continued, tmp_path / "pair", 2)
+    alone = run_training(
+        load_config(
+            TrainingConfig,
+            path=_data_parallel_config(
+                tmp_path / "alone", prepared, steps=4, device="cuda"
+            ),
+        ),
+        output_directory=tmp_path / "alone",
+    )
+
+    pair = load_training_checkpoint(tmp_path / "pair/checkpoints/step-00000004.pt")
+    one = load_training_checkpoint(alone.checkpoint_path)
+    assert pair["metadata"]["execution"]["world_size"] == 2
+    assert pair["loader_state"] == one["loader_state"]
+    for name, value in one["model_state"].items():
+        torch.testing.assert_close(pair["model_state"][name], value)
+    record = json.loads((tmp_path / "pair/run.json").read_text(encoding="utf-8"))
+    assert record["validation"] is not None
+    assert record["hardware"]["cuda"]["device_count"] >= 2
+
+
+def test_an_accumulation_the_ranks_cannot_share_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "anthro_chess.training.runner.launched_parallelism",
+        lambda: DataParallel(rank=0, local_rank=0, world_size=2),
+    )
+    config = _write_training_config(
+        tmp_path,
+        normalized=tmp_path / "unread",
+        manifest=tmp_path / "unread.json",
+        run_name="run",
+        validation=False,
+        extra="gradient_accumulation_steps = 3\n",
+    )
+
+    with pytest.raises(TrainingError, match="cannot be shared evenly across 2"):
+        run_training(
+            load_config(TrainingConfig, path=config),
+            output_directory=tmp_path / "run",
+        )
+    assert not (tmp_path / "run").exists()
 
 
 @pytest.mark.gpu
@@ -2313,6 +2567,7 @@ def _write_training_config(
     train_batch: str = "batch_size = 1",
     train_selection: str = "",
     train_streaming: str = "",
+    model_extra: str = "",
 ) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     config_path = tmp_path / "training.toml"
@@ -2357,6 +2612,7 @@ layers = 1
 feedforward_dim = 24
 history_positions = 2
 dropout = 0.0
+{model_extra}
 
 [train]
 normalized = {json.dumps(str(normalized))}

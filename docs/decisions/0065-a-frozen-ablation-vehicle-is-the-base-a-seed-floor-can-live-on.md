@@ -27,6 +27,10 @@ measurement this record created its base for, and it settles a question left
 open here: most of the spread is the training run rather than the seed, so the
 stored floor is the total rather than a seed term extracted from it.
 
+`0091-ranks-share-a-step-and-the-world-size-is-provenance.md` keeps the number
+of cards a run is spread across out of the digest without opening the gap this
+record closes: the cards share the declared batch rather than adding to it.
+
 `docs/scaling.md` states the resulting rule and owns the program the vehicle
 serves.
 

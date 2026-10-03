@@ -37,6 +37,7 @@ from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass, replace
 from functools import partial
 from hashlib import sha256
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +73,7 @@ from anthro_chess.data.loading import (
     collate_sequences,
     loader_configuration_sha256,
     packed_cuts,
+    require_rank,
     require_resolved_snapshot,
     subsample_threshold,
     within_subsample,
@@ -414,7 +416,10 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         streaming: StreamingLoaderConfig,
         *,
         legal_actions: bool = True,
+        rank: int = 0,
+        world_size: int = 1,
     ) -> None:
+        require_rank(rank, world_size)
         if config.split != selection.split:
             raise DataLoadingError("loader split does not match the sequence selection")
         if config.chunk_length != selection.chunk_length:
@@ -433,12 +438,16 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         # selection holds.
         self.legal_actions = legal_actions
         self.configuration_sha256 = shard_loader_configuration_sha256(config, streaming)
+        self._rank = rank
+        self._world_size = world_size
         self._pool: ProcessPoolExecutor | None = None
         self._reader: Any | None = None
         self._reader_shard: int | None = None
         self._table: Any | None = None
         self._table_group: _RowGroup | None = None
-        self._inflight: deque[tuple[int, Future[SequenceBatch]]] = deque()
+        #: This rank's batches in flight, each with the plan ordinals of its
+        #: whole group, since the cursor passes the other ranks' batches too.
+        self._inflight: deque[tuple[tuple[int, ...], Future[SequenceBatch]]] = deque()
         self._epoch = 0
         self._position = 0
         self._group_index = 0
@@ -452,16 +461,17 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         self._fill()
         if not self._inflight:
             raise StopIteration
-        ordinal, pending = self._inflight.popleft()
+        ordinals, pending = self._inflight.popleft()
         batch = pending.result()
-        self._position += 1
+        self._position += len(ordinals)
         # Tracked on the way out rather than on the way in, because the cursor
         # has to name the batch a resumed run reads next and the plan runs
         # ahead of that by the prefetch depth.
-        self._group_position = (
-            self._group_position + 1 if ordinal == self._group_index else 1
-        )
-        self._group_index = ordinal
+        for ordinal in ordinals:
+            self._group_position = (
+                self._group_position + 1 if ordinal == self._group_index else 1
+            )
+            self._group_index = ordinal
         self._fill()
         return batch
 
@@ -616,11 +626,11 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         workers = self.streaming.workers
         depth = workers + self.streaming.prefetch_batches if workers else 1
         while len(self._inflight) < depth:
-            planned = next(self._plan, None)
-            if planned is None:
+            group = list(islice(self._plan, self._world_size))
+            if len(group) < self._world_size:
                 return
-            ordinal, batch = planned
-            self._inflight.append((ordinal, self._submit(batch)))
+            ordinals = tuple(ordinal for ordinal, _ in group)
+            self._inflight.append((ordinals, self._submit(group[self._rank][1])))
 
     def _submit(self, planned: _PlannedBatch) -> Future[SequenceBatch]:
         job = self._job(planned)

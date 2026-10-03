@@ -8,14 +8,16 @@ import math
 import random
 import time
 from collections.abc import Mapping, Sequence
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager, ExitStack, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
 from torch.nn.utils import clip_grads_with_norm_
 
 from anthro_chess.chess import action_vocabulary_identity
@@ -55,6 +57,7 @@ from anthro_chess.training.cadence import (
     CadenceError,
     CadenceReading,
     CadenceSchedule,
+    PreparedCadence,
     prepare_schedule,
 )
 from anthro_chess.training.checkpoints import (
@@ -75,6 +78,15 @@ from anthro_chess.training.devices import (
     DeviceError,
     hardware_record,
     resolve_training_device,
+)
+from anthro_chess.training.distributed import (
+    SINGLE_PROCESS,
+    DataParallel,
+    DistributedError,
+    launched_parallelism,
+    rank_device,
+    rank_seed,
+    start_process_group,
 )
 from anthro_chess.training.efficiency import (
     DeferredStepTotals,
@@ -204,6 +216,14 @@ class _DataSelection:
     #: accounts the loader did, rather than resolving the snapshot a second
     #: time and being able to disagree with it.
     marked_digests: frozenset[int] | None
+
+
+@dataclass(frozen=True)
+class _StepWriters:
+    """What the step loop writes to, which only the primary rank opens."""
+
+    metrics: TextIO
+    tensorboard: TrainingTensorBoard
 
 
 @dataclass(frozen=True)
@@ -351,19 +371,73 @@ def run_training(
     Passing no ``store`` runs any declared cadence and records nothing, which
     is what an exploratory run wants: committed history should hold readings
     somebody meant to keep.
+
+    Launched by `torchrun`, every process calls this and each trains on its
+    share of every step. The primary rank alone writes the run's directory, and
+    the result every other rank returns names what the primary wrote.
     """
 
     run_started = time.perf_counter()
     config = resolved_config.value
-    device = _training_device(config)
+    try:
+        parallel = launched_parallelism()
+        device = rank_device(parallel, _training_device(config))
+    except DistributedError as error:
+        raise TrainingError(str(error)) from error
+    if config.gradient_accumulation_steps % parallel.world_size:
+        raise TrainingError(
+            f"gradient_accumulation_steps {config.gradient_accumulation_steps} "
+            f"cannot be shared evenly across {parallel.world_size} ranks. Each "
+            f"rank takes an equal share of every step's micro-batches, which is "
+            f"what keeps the effective batch the one the configuration declares"
+        )
+    try:
+        if parallel.distributed:
+            start_process_group(device)
+    except RuntimeError as error:
+        raise TrainingError(
+            f"cannot join the launch's process group: {error}"
+        ) from error
+    try:
+        return _train(
+            resolved_config,
+            parallel=parallel,
+            device=device,
+            run_started=run_started,
+            output_directory=output_directory,
+            # Every rank records the same run, so one of them does.
+            store=store if parallel.primary else None,
+            detail=detail,
+            # Every rank reads the same files, and a primary that finds one
+            # corrupt stops them all, so one rank hashing them is enough.
+            verify_data=verify_data and parallel.primary,
+        )
+    finally:
+        if parallel.distributed:
+            dist.destroy_process_group()
+
+
+def _train(
+    resolved_config: ResolvedConfig[TrainingConfig],
+    *,
+    parallel: DataParallel,
+    device: torch.device,
+    run_started: float,
+    output_directory: Path,
+    store: ResultsStore | None,
+    detail: DetailStore | None,
+    verify_data: bool,
+) -> TrainingResult:
+    config = resolved_config.value
     efficiency_monitor = TrainingEfficiencyMonitor(
         config.efficiency,
         device=device,
         started=run_started,
     )
     logger.info(
-        "Starting training on %s for %s optimizer step(s)",
+        "Starting training on %s across %s rank(s) for %s optimizer step(s)",
         device.type,
+        parallel.world_size,
         config.steps,
     )
     checked: dict[tuple[str, tuple[Path, ...]], tuple[ShardIdentity, ...]] = {}
@@ -378,6 +452,7 @@ def run_training(
             config_source=resolved_config.provenance.source,
             verify_data=verify_data,
             checked=checked,
+            parallel=parallel,
         )
         validation = (
             _load_data_selection(
@@ -397,7 +472,8 @@ def run_training(
     # its directory, and a reading recorded under a different one would not join.
     run_id = output_directory.name
     try:
-        output_directory.mkdir(parents=True, exist_ok=True)
+        if parallel.primary:
+            output_directory.mkdir(parents=True, exist_ok=True)
     except OSError as error:
         raise TrainingError(
             f"cannot create training output directory {output_directory}: {error}"
@@ -439,7 +515,7 @@ def run_training(
             "validation": validation.provenance if validation is not None else None,
         }
         model_identity = model.identity()
-        execution_record = _execution_record(config, device)
+        execution_record = _execution_record(config, device, parallel)
         compatibility = compatibility_record(
             config,
             data=data_record,
@@ -512,6 +588,22 @@ def run_training(
                 device=device,
                 fallback_seed=config.seed,
             )
+        if not parallel.primary:
+            seed = rank_seed(config.seed, parallel.rank, starting_step)
+            random.seed(seed)
+            torch.manual_seed(seed)
+        trained: torch.nn.Module = (
+            DistributedDataParallel(
+                model,
+                device_ids=[device.index] if device.type == "cuda" else None,
+                # Every buffer is a constant derived from the encoding, so
+                # there is nothing to keep in step and no reason to pay for a
+                # broadcast on every forward pass.
+                forward_sync_buffers=False,
+            )
+            if parallel.distributed
+            else model
+        )
 
         configuration = configuration_reference(
             resolved_config.as_record(),
@@ -537,6 +629,7 @@ def run_training(
                     batch_size=train.loader.config.batch_extent,
                     batch_unit=train.loader.config.batch_unit,
                     gradient_accumulation_steps=config.gradient_accumulation_steps,
+                    world_size=parallel.world_size,
                     determinism=config.determinism,
                     matmul_precision=config.matmul_precision,
                     compilation=config.compilation,
@@ -567,23 +660,25 @@ def run_training(
             resumed_from=resumed_from,
             initial_parameter_sha256=initial_parameter_sha256,
         )
-        if resumed_from is None:
-            clear_latest_checkpoint(output_directory)
-        _prepare_metrics(metrics_path, through_step=starting_step)
-        # Before the first checkpoint rather than after it, because whatever
-        # this replaces describes a different run: the finished one a resume
-        # continues, or an earlier one that reused the directory. Left until the
-        # first checkpoint, either would have this run's whole first interval
-        # reading as a run that completed.
-        run_record.write(
-            completed_steps=starting_step,
-            processed_positions=processed_positions,
-            checkpoint=None,
-            complete=False,
-        )
+        if parallel.primary:
+            if resumed_from is None:
+                clear_latest_checkpoint(output_directory)
+            _prepare_metrics(metrics_path, through_step=starting_step)
+            # Before the first checkpoint rather than after it, because whatever
+            # this replaces describes a different run: the finished one a resume
+            # continues, or an earlier one that reused the directory. Left until
+            # the first checkpoint, either would have this run's whole first
+            # interval reading as a run that completed.
+            run_record.write(
+                completed_steps=starting_step,
+                processed_positions=processed_positions,
+                checkpoint=None,
+                complete=False,
+            )
         efficiency_monitor.begin_optimization(starting_step=starting_step)
         optimization = _optimize(
             model,
+            trained,
             optimizer,
             train.loader,
             steps=config.steps,
@@ -605,11 +700,22 @@ def run_training(
             run_id=run_id,
             efficiency=efficiency_recorder,
             run_record=run_record,
+            parallel=parallel,
         )
         _synchronize_device(device)
         final_parameter_sha256 = parameter_sha256(model)
         if final_parameter_sha256 == initial_parameter_sha256:
             raise TrainingError("optimizer completed without changing model parameters")
+        if not parallel.primary:
+            return TrainingResult(
+                run_path=run_path,
+                metrics_path=metrics_path,
+                checkpoint_path=optimization.checkpoint_path,
+                steps=config.steps,
+                initial_parameter_sha256=initial_parameter_sha256,
+                final_parameter_sha256=final_parameter_sha256,
+                validation=None,
+            )
 
         if validation is not None:
             logger.info("Running validation")
@@ -726,6 +832,7 @@ def run_training(
 
 def _optimize(
     model: MoveModel,
+    trained: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     loader: SequenceBatchSource,
     *,
@@ -748,9 +855,21 @@ def _optimize(
     run_id: str,
     efficiency: _EfficiencyRecorder,
     run_record: _RunRecordWriter,
+    parallel: DataParallel,
 ) -> _OptimizationResult:
+    """Run the step loop, calling ``trained`` and saving ``model``.
+
+    The two are one module except across ranks, where ``trained`` is the
+    data-parallel wrapper whose backward pass averages gradients and ``model``
+    is what it wraps, so a checkpoint's keys stay the ones a single process
+    loads.
+    """
+
     model.train()
     monitor = efficiency.monitor
+    # Each rank takes an equal share of every step's micro-batches, so the
+    # effective batch is the configured one however many ranks share it.
+    local_accumulation = gradient_accumulation_steps // parallel.world_size
     training_sha256 = training_identity_sha256(compatibility)
     saved_checkpoint: Path | None = None
     saved_step = starting_step
@@ -765,17 +884,27 @@ def _optimize(
     charged_instrumentation = 0.0
     readings: list[CadenceReading] = []
     efficiency_paths: list[Path] = []
-    totals = DeferredStepTotals(device)
+    totals = DeferredStepTotals(
+        device,
+        reduce=dist.all_reduce if parallel.distributed else None,
+    )
     interval_start_step = starting_step + 1
     interval_positions = 0
     purge_step = starting_step + 1 if starting_step > 0 else None
-    with (
-        TrainingTensorBoard(
-            output_directory / TENSORBOARD_DIRECTORY,
-            purge_step=purge_step,
-        ) as tensorboard,
-        metrics_path.open("a", encoding="utf-8") as metrics_file,
-    ):
+    with ExitStack() as opened:
+        writers = (
+            _StepWriters(
+                metrics=opened.enter_context(metrics_path.open("a", encoding="utf-8")),
+                tensorboard=opened.enter_context(
+                    TrainingTensorBoard(
+                        output_directory / TENSORBOARD_DIRECTORY,
+                        purge_step=purge_step,
+                    )
+                ),
+            )
+            if parallel.primary
+            else None
+        )
         for global_step in range(starting_step + 1, steps + 1):
             # Everything that decides how a step is instrumented is resolved
             # before it runs. A probe step has to know it is one before its
@@ -798,7 +927,7 @@ def _optimize(
             monitor.begin_step()
             totals.begin_step()
             optimizer.zero_grad()
-            for _ in range(gradient_accumulation_steps):
+            for micro_batch in range(local_accumulation):
                 data_started = time.perf_counter()
                 try:
                     sequence_batch = next(loader)
@@ -811,6 +940,13 @@ def _optimize(
                             "training data produced no batches; check whether "
                             "the selection matches any games, and whether "
                             "drop_last and batch size discard every batch"
+                            + (
+                                f", and whether an epoch holds at least one "
+                                f"batch for each of the {parallel.world_size} "
+                                f"ranks sharing it"
+                                if parallel.distributed
+                                else ""
+                            )
                         ) from error
                 data_seconds += time.perf_counter() - data_started
 
@@ -826,16 +962,24 @@ def _optimize(
                 transfer_seconds += time.perf_counter() - transfer_started
 
                 compute_started = time.perf_counter()
-                with autocast:
-                    loss = masked_action_cross_entropy(
-                        model(batch),
-                        batch.action_targets,
-                        batch.action_loss_mask,
-                    )
-                # Backward stays outside the autocast scope. Each operation's
-                # backward already runs in the dtype its forward chose, and
-                # nesting it would autocast a second time.
-                (loss / gradient_accumulation_steps).backward()
+                # Gradients are averaged across ranks once, after the last
+                # micro-batch, rather than after each one.
+                with (
+                    trained.no_sync()
+                    if isinstance(trained, DistributedDataParallel)
+                    and micro_batch < local_accumulation - 1
+                    else nullcontext()
+                ):
+                    with autocast:
+                        loss = masked_action_cross_entropy(
+                            trained(batch),
+                            batch.action_targets,
+                            batch.action_loss_mask,
+                        )
+                    # Backward stays outside the autocast scope. Each
+                    # operation's backward already runs in the dtype its forward
+                    # chose, and nesting it would autocast a second time.
+                    (loss / local_accumulation).backward()
                 if profile_phases:
                     _synchronize_device(device)
                 compute_seconds += time.perf_counter() - compute_started
@@ -882,7 +1026,6 @@ def _optimize(
                 health_monitor,
                 charged_instrumentation,
             )
-            padded_positions = totals.padded_positions
             drained = totals.drain() if draining else None
             monitor.end_step()
 
@@ -897,147 +1040,76 @@ def _optimize(
                     )
                 interval_positions = drained.active_positions
                 processed_positions += drained.active_positions
-                monitor.close_interval(drained, padded_positions=padded_positions)
+                monitor.close_interval(drained)
                 average_loss = drained.final_step_loss_sum / gradient_accumulation_steps
                 interval_start_step = global_step + 1
 
             epoch = loader.state().epoch
-            if reported:
+            if reported and writers is not None:
                 assert average_loss is not None  # a reported step always drains
                 report_started = time.perf_counter()
-                learning_rate = float(optimizer.param_groups[0]["lr"])
-                summary = monitor.summary(processed_positions=processed_positions)
-                record: dict[str, object] = {
-                    "record": "step",
-                    "global_step": global_step,
-                    "epoch": epoch,
-                    "move_loss": average_loss,
-                    "learning_rate": learning_rate,
-                    # The logging interval's active positions, not one step's.
-                    # A per-step count would need a device read-back on every
-                    # step, which is the cost the deferred totals exist to
-                    # avoid, so the field says which quantity it carries.
-                    "interval_active_positions": interval_positions,
-                    "processed_positions": processed_positions,
-                    # Steady state, so it is null until the window opens. The
-                    # figure that included warmup answered a different question
-                    # and drifted for the whole run.
-                    "positions_per_second": summary.active_positions_per_second,
-                    "elapsed_seconds": summary.run_seconds,
-                    "training_seconds": summary.training_seconds,
-                    "evaluation_seconds": summary.evaluation_seconds,
-                    "checkpoint_seconds": summary.checkpoint_seconds,
-                    "data_seconds": data_seconds if profile_phases else None,
-                    "transfer_seconds": (transfer_seconds if profile_phases else None),
-                    # Forward and backward only. The optimizer's own work is
-                    # reported beside it rather than inside it, because the two
-                    # scale with different things and a merged figure cannot
-                    # say which of them a slow step is spending its time in.
-                    "compute_seconds": compute_seconds if profile_phases else None,
-                    "optimizer_seconds": (
-                        optimizer_seconds if profile_phases else None
-                    ),
-                    "peak_allocated_memory_bytes": (
-                        monitor.peak_allocated_memory_bytes
-                    ),
-                    "peak_driver_memory_bytes": monitor.peak_driver_memory_bytes,
-                    "training_health": (
-                        health.as_record() if health is not None else None
-                    ),
-                    "health_instrumentation_seconds": (
-                        health_monitor.instrumentation_seconds
-                    ),
-                }
-                _refuse_non_finite(record, global_step)
-                metrics_file.write(
-                    json.dumps(record, sort_keys=True, allow_nan=False) + "\n"
-                )
-                metrics_file.flush()
-                tensorboard.write_step(
+                _report_step(
                     global_step=global_step,
-                    move_loss=average_loss,
-                    learning_rate=learning_rate,
+                    epoch=epoch,
+                    average_loss=average_loss,
+                    learning_rate=float(optimizer.param_groups[0]["lr"]),
+                    interval_positions=interval_positions,
+                    processed_positions=processed_positions,
+                    monitor=monitor,
+                    phase_seconds={
+                        "data_seconds": data_seconds,
+                        "transfer_seconds": transfer_seconds,
+                        "compute_seconds": compute_seconds,
+                        "optimizer_seconds": optimizer_seconds,
+                    }
+                    if profile_phases
+                    else None,
                     health=health,
-                )
-                logger.info(
-                    f"step={global_step} move_loss={average_loss:.6f} "
-                    f"lr={learning_rate:.6g} positions={processed_positions} "
-                    f"positions_per_second="
-                    f"{_render_throughput(summary.active_positions_per_second)}"
+                    health_monitor=health_monitor,
+                    writers=writers,
                 )
                 monitor.charge(
                     time.perf_counter() - report_started,
                     kind="instrumentation",
                 )
-            if due:
-                # One reference for every entry firing here: an in-training
-                # preview and the later canonical reading of these parameters
-                # have to agree on which checkpoint they describe.
-                measured = CheckpointReference(
-                    label=default_checkpoint_label(run_id, global_step),
-                    step=global_step,
+            if due and writers is not None:
+                cadence_readings, cadence_efficiency_paths = _run_due_cadences(
+                    due,
+                    schedule=schedule,
+                    model=model,
+                    device=device,
+                    global_step=global_step,
                     run_id=run_id,
-                    parameter_sha256=parameter_sha256(model),
                     training_sha256=training_sha256,
+                    processed_positions=processed_positions,
+                    health=health,
+                    efficiency=efficiency,
+                    writers=writers,
                 )
-                for entry in due:
-                    reading = schedule.run(
-                        entry,
-                        model,
-                        device=device,
-                        global_step=global_step,
-                        checkpoint=measured,
-                        health=health,
-                    )
-                    readings.append(reading)
-                    monitor.charge(reading.seconds, kind="evaluation")
-                    metrics_file.write(
-                        json.dumps(
-                            reading.as_record(),
-                            sort_keys=True,
-                            allow_nan=False,
-                        )
-                        + "\n"
-                    )
-                    metrics_file.flush()
-                    tensorboard.write_evaluation(reading)
-                if efficiency.record_at_cadence:
-                    # The budget point a quality-versus-time report joins to
-                    # the preview reading just taken, under the same label.
-                    efficiency_paths.extend(
-                        efficiency.record(
-                            checkpoint=measured,
-                            processed_positions=processed_positions,
-                        )
-                    )
+                readings.extend(cadence_readings)
+                efficiency_paths.extend(cadence_efficiency_paths)
             if saving:
-                checkpoint_started = time.perf_counter()
                 saved_step = global_step
                 saved_checkpoint = checkpoint_path(output_directory, global_step)
-                save_training_checkpoint(
-                    saved_checkpoint,
-                    global_step=global_step,
-                    counters={"processed_positions": processed_positions},
-                    model_state=model.state_dict(),
-                    optimizer_state=optimizer.state_dict(),
-                    scheduler_state=None,
-                    scaler_state=None,
-                    loader_state=loader.state().as_record(),
-                    compatibility=compatibility,
-                    metadata=checkpoint_metadata,
-                    device=device,
-                )
-                run_record.write(
-                    completed_steps=global_step,
-                    processed_positions=processed_positions,
-                    checkpoint=saved_checkpoint,
-                    complete=False,
-                )
-                monitor.charge(
-                    time.perf_counter() - checkpoint_started,
-                    kind="checkpoint",
-                )
-                logger.info("Saved checkpoint at optimizer step %s", global_step)
+                if parallel.primary:
+                    checkpoint_started = time.perf_counter()
+                    _save_step_checkpoint(
+                        saved_checkpoint,
+                        global_step=global_step,
+                        processed_positions=processed_positions,
+                        model=model,
+                        optimizer=optimizer,
+                        loader=loader,
+                        compatibility=compatibility,
+                        checkpoint_metadata=checkpoint_metadata,
+                        device=device,
+                        run_record=run_record,
+                    )
+                    monitor.charge(
+                        time.perf_counter() - checkpoint_started,
+                        kind="checkpoint",
+                    )
+                    logger.info("Saved checkpoint at optimizer step %s", global_step)
     if saved_checkpoint is None:
         raise TrainingError("training completed without saving a checkpoint")
     return _OptimizationResult(
@@ -1047,6 +1119,165 @@ def _optimize(
         readings=tuple(readings),
         instrumentation_seconds=health_monitor.instrumentation_seconds,
         efficiency_paths=tuple(efficiency_paths),
+    )
+
+
+def _report_step(
+    *,
+    global_step: int,
+    epoch: int,
+    average_loss: float,
+    learning_rate: float,
+    interval_positions: int,
+    processed_positions: int,
+    monitor: TrainingEfficiencyMonitor,
+    phase_seconds: Mapping[str, float] | None,
+    health: StepHealth | None,
+    health_monitor: StepHealthMonitor,
+    writers: _StepWriters,
+) -> None:
+    """Write one reported step to the metrics file, TensorBoard, and the log."""
+
+    summary = monitor.summary(processed_positions=processed_positions)
+    record: dict[str, object] = {
+        "record": "step",
+        "global_step": global_step,
+        "epoch": epoch,
+        "move_loss": average_loss,
+        "learning_rate": learning_rate,
+        # The logging interval's active positions, not one step's. A per-step
+        # count would need a device read-back on every step, which is the cost
+        # the deferred totals exist to avoid, so the field says which quantity
+        # it carries.
+        "interval_active_positions": interval_positions,
+        "processed_positions": processed_positions,
+        # Steady state, so it is null until the window opens. The figure that
+        # included warmup answered a different question and drifted for the
+        # whole run.
+        "positions_per_second": summary.active_positions_per_second,
+        "elapsed_seconds": summary.run_seconds,
+        "training_seconds": summary.training_seconds,
+        "evaluation_seconds": summary.evaluation_seconds,
+        "checkpoint_seconds": summary.checkpoint_seconds,
+        # Forward and backward are `compute_seconds` alone. The optimizer's own
+        # work is reported beside it rather than inside it, because the two
+        # scale with different things and a merged figure cannot say which of
+        # them a slow step is spending its time in.
+        "data_seconds": None,
+        "transfer_seconds": None,
+        "compute_seconds": None,
+        "optimizer_seconds": None,
+        **(phase_seconds or {}),
+        "peak_allocated_memory_bytes": monitor.peak_allocated_memory_bytes,
+        "peak_driver_memory_bytes": monitor.peak_driver_memory_bytes,
+        "training_health": health.as_record() if health is not None else None,
+        "health_instrumentation_seconds": health_monitor.instrumentation_seconds,
+    }
+    _refuse_non_finite(record, global_step)
+    writers.metrics.write(json.dumps(record, sort_keys=True, allow_nan=False) + "\n")
+    writers.metrics.flush()
+    writers.tensorboard.write_step(
+        global_step=global_step,
+        move_loss=average_loss,
+        learning_rate=learning_rate,
+        health=health,
+    )
+    logger.info(
+        f"step={global_step} move_loss={average_loss:.6f} "
+        f"lr={learning_rate:.6g} positions={processed_positions} "
+        f"positions_per_second="
+        f"{_render_throughput(summary.active_positions_per_second)}"
+    )
+
+
+def _run_due_cadences(
+    due: Sequence[PreparedCadence],
+    *,
+    schedule: CadenceSchedule,
+    model: MoveModel,
+    device: torch.device,
+    global_step: int,
+    run_id: str,
+    training_sha256: str,
+    processed_positions: int,
+    health: StepHealth | None,
+    efficiency: _EfficiencyRecorder,
+    writers: _StepWriters,
+) -> tuple[list[CadenceReading], list[Path]]:
+    """Take every cadence reading due at one step, and the budget point beside them."""
+
+    # One reference for every entry firing here: an in-training preview and the
+    # later canonical reading of these parameters have to agree on which
+    # checkpoint they describe.
+    measured = CheckpointReference(
+        label=default_checkpoint_label(run_id, global_step),
+        step=global_step,
+        run_id=run_id,
+        parameter_sha256=parameter_sha256(model),
+        training_sha256=training_sha256,
+    )
+    readings: list[CadenceReading] = []
+    for entry in due:
+        reading = schedule.run(
+            entry,
+            model,
+            device=device,
+            global_step=global_step,
+            checkpoint=measured,
+            health=health,
+        )
+        readings.append(reading)
+        efficiency.monitor.charge(reading.seconds, kind="evaluation")
+        writers.metrics.write(
+            json.dumps(reading.as_record(), sort_keys=True, allow_nan=False) + "\n"
+        )
+        writers.metrics.flush()
+        writers.tensorboard.write_evaluation(reading)
+    if not efficiency.record_at_cadence:
+        return readings, []
+    # The budget point a quality-versus-time report joins to the preview reading
+    # just taken, under the same label.
+    return readings, list(
+        efficiency.record(
+            checkpoint=measured,
+            processed_positions=processed_positions,
+        )
+    )
+
+
+def _save_step_checkpoint(
+    path: Path,
+    *,
+    global_step: int,
+    processed_positions: int,
+    model: MoveModel,
+    optimizer: torch.optim.Optimizer,
+    loader: SequenceBatchSource,
+    compatibility: Mapping[str, object],
+    checkpoint_metadata: Mapping[str, object],
+    device: torch.device,
+    run_record: _RunRecordWriter,
+) -> None:
+    """Save one step's checkpoint and point the run record at it."""
+
+    save_training_checkpoint(
+        path,
+        global_step=global_step,
+        counters={"processed_positions": processed_positions},
+        model_state=model.state_dict(),
+        optimizer_state=optimizer.state_dict(),
+        scheduler_state=None,
+        scaler_state=None,
+        loader_state=loader.state().as_record(),
+        compatibility=compatibility,
+        metadata=checkpoint_metadata,
+        device=device,
+    )
+    run_record.write(
+        completed_steps=global_step,
+        processed_positions=processed_positions,
+        checkpoint=path,
+        complete=False,
     )
 
 
@@ -1298,6 +1529,7 @@ _EXECUTION_PROVENANCE_KEYS = (
     "device",
     "backend",
     "gradient_accumulation_steps",
+    "world_size",
     "fused_optimizer",
     "phase_profiling",
 )
@@ -1306,6 +1538,7 @@ _EXECUTION_PROVENANCE_KEYS = (
 def _execution_record(
     config: TrainingConfig,
     device: torch.device,
+    parallel: DataParallel,
 ) -> dict[str, object]:
     """Record how one run executed, in the two roles resume distinguishes.
 
@@ -1321,6 +1554,7 @@ def _execution_record(
         "parameter_dtype": str(_training_dtype(config)).removeprefix("torch."),
         "determinism": config.determinism,
         "gradient_accumulation_steps": config.gradient_accumulation_steps,
+        "world_size": parallel.world_size,
         "fused_optimizer": _fused_optimizer(device),
         "matmul_precision": config.matmul_precision,
         "compilation": config.compilation,
@@ -1410,6 +1644,7 @@ def _load_data_selection(
     config_source: str | None,
     verify_data: bool,
     checked: dict[tuple[str, tuple[Path, ...]], tuple[ShardIdentity, ...]],
+    parallel: DataParallel = SINGLE_PROCESS,
 ) -> _DataSelection:
     paths = normalized_shard_paths(config.normalized)
     manifest_path = config.manifest
@@ -1447,6 +1682,7 @@ def _load_data_selection(
         manifest_sha256=manifest_sha256,
         legal_actions=legal_actions,
         marked_digests=marked_digests,
+        parallel=parallel,
     )
     return _DataSelection(
         loader=loader,
@@ -1480,6 +1716,7 @@ def _open_loader(
     manifest_sha256: str,
     legal_actions: bool,
     marked_digests: frozenset[int] | None,
+    parallel: DataParallel,
 ) -> SequenceBatchSource:
     """Open the loader this selection declared, eager or shard-backed."""
 
@@ -1489,6 +1726,8 @@ def _open_loader(
             config.loader,
             legal_actions=legal_actions,
             marked_digests=marked_digests,
+            rank=parallel.rank,
+            world_size=parallel.world_size,
         )
     selection = resolve_sharded_selection(
         shards,
@@ -1503,4 +1742,6 @@ def _open_loader(
         config.loader,
         config.streaming,
         legal_actions=legal_actions,
+        rank=parallel.rank,
+        world_size=parallel.world_size,
     )
