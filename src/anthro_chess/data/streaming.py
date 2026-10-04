@@ -700,9 +700,9 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         if self.config.shuffle:
             order.sort(key=partial(_group_key, self.config.seed, epoch))
         span = self.streaming.interleaved_row_groups
-        for ordinal in range(start, -(-len(order) // span)):
-            groups = tuple(order[ordinal * span : (ordinal + 1) * span])
-            for planned in self._plan_span(groups, epoch):
+        spans = [tuple(order[at : at + span]) for at in range(0, len(order), span)]
+        for ordinal in range(start, len(spans)):
+            for planned in self._plan_span(spans[ordinal], epoch):
                 yield ordinal, planned
 
     def _plan_span(
@@ -800,8 +800,8 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
             )
         sources: list[_BatchSource] = []
         row_index: dict[tuple[_RowGroup, int], tuple[int, int]] = {}
-        for group in sorted(game_lengths, key=planned.groups.index):
-            rows = sorted(game_lengths[group])
+        for group, lengths in game_lengths.items():
+            rows = sorted(lengths)
             for index, position in enumerate(rows):
                 row_index[group, position] = (len(sources), index)
             sources.append(
@@ -809,7 +809,7 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
                     shard=group.shard,
                     path=str(self.corpus.shards[group.shard].path),
                     row_table=take_rows(self._row_group_table(group), rows),
-                    lengths=tuple(game_lengths[group][position] for position in rows),
+                    lengths=tuple(lengths[position] for position in rows),
                 )
             )
         return _BatchJob(

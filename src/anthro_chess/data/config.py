@@ -358,14 +358,13 @@ class StreamingLoaderConfig(ConfigModel):
     length buckets are filled and flushed, so it belongs to the loader identity
     a resumed run has to match. ``interleaved_row_groups`` does too: that many
     consecutive row groups of the epoch order are shuffled together before
-    windows are cut, so a batch draws from all of them rather than from one, and
-    all of them are resident at once. Without ``shuffle`` nothing mixes them,
-    so a span wider than one only holds more. ``workers`` and ``prefetch_batches`` do not;
-    they decide how far ahead the same batches are built and on how many
-    processes, so a run may be resumed on a machine that affords a different
-    number of either. ``prefetch_batches`` applies only alongside workers:
-    with none, building a batch ahead would cost the memory and save nothing,
-    so exactly one is held.
+    windows are cut, so a batch draws from all of them rather than from one.
+    Without ``shuffle`` nothing mixes them, and a wider span only costs memory.
+    ``workers`` and ``prefetch_batches`` do not; they decide how far ahead the
+    same batches are built and on how many processes, so a run may be resumed on
+    a machine that affords a different number of either. ``prefetch_batches``
+    applies only alongside workers: with none, building a batch ahead would cost
+    the memory and save nothing, so exactly one is held.
 
     The two add rather than compete: the loader keeps one outstanding job per
     worker and ``prefetch_batches`` more on top, because a worker whose next
@@ -373,10 +372,9 @@ class StreamingLoaderConfig(ConfigModel):
     it just finished. Their sum is what is resident, so raising the pool raises
     the memory held in flight as much as raising the depth does.
 
-    The remaining bound is not configured here at all. Materialization holds
-    ``interleaved_row_groups`` row groups at a time, so preparation's shard and
-    row-group sizing is what caps each columnar read; ``docs/data.md`` owns that
-    end.
+    The remaining bound is only half configured here. Materialization holds
+    ``interleaved_row_groups`` row groups at a time, and preparation's shard and
+    row-group sizing is what caps each of them; ``docs/data.md`` owns that end.
     """
 
     planning_window_examples: int = Field(default=16384, ge=1)
