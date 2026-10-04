@@ -526,10 +526,11 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
     """Deterministic shard-backed batch iterator with explicit resume state.
 
     An epoch orders row groups and takes them in consecutive spans of
-    ``interleaved_row_groups``. It shuffles the games of a span together, then
-    cuts that stream into planning windows. A window is where length buckets
-    fill and where they are flushed, so every example in a batch comes from one
-    span and a batch is read with one columnar take per row group in it.
+    ``interleaved_row_groups``. It pools the games of a span, shuffled when
+    ``shuffle`` is set, then cuts that stream into planning windows. A window is
+    where length buckets fill and where they are flushed, so every example in a
+    batch comes from one span and a batch is read with one columnar take per row
+    group in it.
 
     That is a different order from the eager loader's global shuffle, and
     deliberately so: a global shuffle over a corpus means a seek per example.

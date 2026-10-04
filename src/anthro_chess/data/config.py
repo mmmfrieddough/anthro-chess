@@ -359,7 +359,8 @@ class StreamingLoaderConfig(ConfigModel):
     a resumed run has to match. ``interleaved_row_groups`` does too: that many
     consecutive row groups of the epoch order are shuffled together before
     windows are cut, so a batch draws from all of them rather than from one.
-    Without ``shuffle`` nothing mixes them, and a wider span only costs memory.
+    Without ``shuffle`` they stay in row-group order, so only a window that
+    straddles a boundary mixes them.
     ``workers`` and ``prefetch_batches`` do not; they decide how far ahead the
     same batches are built and on how many processes, so a run may be resumed on
     a machine that affords a different number of either. ``prefetch_batches``
