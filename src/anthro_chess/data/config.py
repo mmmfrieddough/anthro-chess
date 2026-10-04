@@ -356,7 +356,10 @@ class StreamingLoaderConfig(ConfigModel):
 
     ``planning_window_examples`` does, because a window is the span over which
     length buckets are filled and flushed, so it belongs to the loader identity
-    a resumed run has to match. ``workers`` and ``prefetch_batches`` do not;
+    a resumed run has to match. ``interleaved_row_groups`` does too: that many
+    consecutive row groups of the epoch order are shuffled together before
+    windows are cut, so a batch draws from all of them rather than from one, and
+    all of them are resident at once. ``workers`` and ``prefetch_batches`` do not;
     they decide how far ahead the same batches are built and on how many
     processes, so a run may be resumed on a machine that affords a different
     number of either. ``prefetch_batches`` applies only alongside workers:
@@ -369,12 +372,14 @@ class StreamingLoaderConfig(ConfigModel):
     it just finished. Their sum is what is resident, so raising the pool raises
     the memory held in flight as much as raising the depth does.
 
-    The remaining bound is not configured here at all. Materialization reads
-    one row group at a time, so preparation's shard and row-group sizing is
-    what caps the columnar read; ``docs/data.md`` owns that end.
+    The remaining bound is not configured here at all. Materialization holds
+    ``interleaved_row_groups`` row groups at a time, so preparation's shard and
+    row-group sizing is what caps each columnar read; ``docs/data.md`` owns that
+    end.
     """
 
     planning_window_examples: int = Field(default=16384, ge=1)
+    interleaved_row_groups: int = Field(default=1, ge=1)
     workers: int = Field(default=0, ge=0)
     prefetch_batches: int = Field(default=4, ge=1)
 

@@ -8,14 +8,15 @@ would need does not fit in host memory and would be paid before the first
 optimizer step regardless.
 
 This loader keeps the same promises and holds almost none of it. What is
-resident is one row group's projected columns, the batches currently in
-flight, and a list naming which row groups the corpus has. Everything else is
-decoded on the way past and released.
+resident is the projected columns of the row groups being interleaved, the
+batches currently in flight, and a list naming which row groups the corpus has.
+Everything else is decoded on the way past and released.
 
-Nothing per game is resident. A batch's examples all come from one row group,
-so which rows a row group contributes and how long each one decodes to are
-derived from that row group at the moment it is reached, which makes what a run
-pays to plan follow what it reads rather than what the corpus holds.
+Nothing per game is resident. A batch's examples all come from the few row
+groups interleaved at that point of the epoch, so which rows a row group
+contributes and how long each one decodes to are derived from that row group at
+the moment it is reached, which makes what a run pays to plan follow what it
+reads rather than what the corpus holds.
 
 Opening a corpus therefore reads nothing, as long as the selection rejects
 nothing: preparation counted every split when it wrote each shard, and the
@@ -141,6 +142,7 @@ class _Example:
     is not the game.
     """
 
+    group: _RowGroup
     position: int
     start_ply: int
     length: int
@@ -149,10 +151,20 @@ class _Example:
 
 @dataclass(frozen=True)
 class _PlannedBatch:
-    """One batch's examples, which all come from a single row group."""
+    """One batch's examples, and the interleaved row groups they come from."""
 
-    group: _RowGroup
+    groups: tuple[_RowGroup, ...]
     examples: tuple[_Example, ...]
+
+
+@dataclass(frozen=True)
+class _BatchSource:
+    """The rows one batch takes from one row group, gathered and still columnar."""
+
+    shard: int
+    path: str
+    row_table: Any
+    lengths: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -164,18 +176,16 @@ class _BatchJob:
     Parquet read sequential in one process instead of having every worker seek
     into the same shard.
 
-    They travel as the table they were gathered into, and the worker is what
+    They travel as the tables they were gathered into, and the worker is what
     turns them into rows of Python values. That conversion costs an object per
     field of every game in the batch, so leaving it in the parent would make
     the one process every batch passes through the slowest part of the loader
     at a wide batch, however many workers were decoding behind it.
     """
 
-    shard: int
-    path: str
-    row_table: Any
-    lengths: tuple[int, ...]
-    entries: tuple[tuple[int, int, int], ...]
+    sources: tuple[_BatchSource, ...]
+    #: Each example as its source, its row there, its first ply, and its length.
+    entries: tuple[tuple[int, int, int, int], ...]
     legal_actions: bool
     #: Set when the entries are laid end to end in one row of this width
     #: rather than given a padded row each.
@@ -494,31 +504,32 @@ def shard_loader_configuration_sha256(
     """Return the loader identity a shard-backed run records.
 
     Wider than :func:`loader_configuration_sha256`, which describes the
-    selection alone. Only the planning window joins it, because only the window
-    decides which examples share a batch; worker count and prefetch depth are
-    what the machine can afford, and a run resumed on another machine should be
-    free to afford differently.
+    selection alone. Only the planning window and the interleave join it,
+    because only they decide which examples share a batch; worker count and
+    prefetch depth are what the machine can afford, and a run resumed on another
+    machine should be free to afford differently.
     """
 
+    identity: dict[str, object] = {
+        "loader": loader_configuration_sha256(config),
+        "planning_window_examples": streaming.planning_window_examples,
+    }
+    # Left out at one so identities recorded before the field existed match.
+    if streaming.interleaved_row_groups != 1:
+        identity["interleaved_row_groups"] = streaming.interleaved_row_groups
     return sha256(
-        json.dumps(
-            {
-                "loader": loader_configuration_sha256(config),
-                "planning_window_examples": streaming.planning_window_examples,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
 
 
 class StreamingSequenceDataLoader(SequenceBatchSource):
     """Deterministic shard-backed batch iterator with explicit resume state.
 
-    An epoch orders row groups, then the games inside each one, then cuts that
-    stream into planning windows. A window is where length buckets fill and
-    where they are flushed, so every example in a batch comes from one row
-    group and a batch is read with a single columnar take.
+    An epoch orders row groups and takes them in consecutive spans of
+    ``interleaved_row_groups``. It shuffles the games of a span together, then
+    cuts that stream into planning windows. A window is where length buckets
+    fill and where they are flushed, so every example in a batch comes from one
+    span and a batch is read with one columnar take per row group in it.
 
     That is a different order from the eager loader's global shuffle, and
     deliberately so: a global shuffle over a corpus means a seek per example.
@@ -560,8 +571,7 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         self._pool: ProcessPoolExecutor | None = None
         self._reader: Any | None = None
         self._reader_shard: int | None = None
-        self._table: Any | None = None
-        self._table_group: _RowGroup | None = None
+        self._tables: dict[_RowGroup, Any] = {}
         #: This rank's batches in flight, each with the plan ordinals of its
         #: whole group, since the cursor passes the other ranks' batches too.
         self._inflight: deque[tuple[tuple[int, ...], Future[SequenceBatch]]] = deque()
@@ -620,9 +630,10 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
     def load_state(self, state: SequenceLoaderState | Mapping[str, object]) -> None:
         """Restore a compatible saved cursor and deterministic epoch order.
 
-        The saved row group is reached by arithmetic over the epoch order and
-        only that one is planned, so a cursor deep into a corpus-scale epoch
-        costs one projected read rather than one per row group before it.
+        The saved span of row groups is reached by arithmetic over the epoch
+        order and only that one is planned, so a cursor deep into a
+        corpus-scale epoch costs a projected read per row group of one span
+        rather than one per row group before it.
         """
 
         parsed = (
@@ -662,7 +673,7 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         self._plan = self._plan_epoch(epoch)
 
     def close(self) -> None:
-        """Release the worker pool and the row group currently resident."""
+        """Release the worker pool and the row groups currently resident."""
 
         self._drain()
         if self._pool is not None:
@@ -670,8 +681,7 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
             self._pool = None
         self._reader = None
         self._reader_shard = None
-        self._table = None
-        self._table_group = None
+        self._tables = {}
 
     def _plan_epoch(
         self,
@@ -682,38 +692,46 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
 
         Generated rather than materialized so a corpus-scale epoch costs a
         cursor instead of a list of every example in it. ``start`` skips whole
-        row groups by arithmetic, which is what lets a resumed run reach a
-        cursor deep into an epoch without planning what came before it.
+        spans of row groups by arithmetic, which is what lets a resumed run
+        reach a cursor deep into an epoch without planning what came before it.
         """
 
         order = list(self.corpus.row_groups)
         if self.config.shuffle:
             order.sort(key=partial(_group_key, self.config.seed, epoch))
-        for ordinal in range(start, len(order)):
-            for planned in self._plan_row_group(order[ordinal], epoch):
+        span = self.streaming.interleaved_row_groups
+        for ordinal in range(start, -(-len(order) // span)):
+            groups = tuple(order[ordinal * span : (ordinal + 1) * span])
+            for planned in self._plan_span(groups, epoch):
                 yield ordinal, planned
 
-    def _plan_row_group(
+    def _plan_span(
         self,
-        group: _RowGroup,
+        groups: tuple[_RowGroup, ...],
         epoch: int,
     ) -> Iterator[_PlannedBatch]:
-        """Yield the batches one row group contributes to an epoch."""
+        """Yield the batches one span of row groups contributes to an epoch."""
 
-        rows = self._eligible_rows(group)
+        rows = [
+            (group, position, length)
+            for group in groups
+            for position, length in self._eligible_rows(group)
+        ]
         if self.config.shuffle:
-            rows.sort(key=partial(_game_key, self.config.seed, epoch, group))
+            rows.sort(key=partial(_game_key, self.config.seed, epoch))
         examples = [
             example
-            for position, length in rows
-            for example in _examples_for(position, length, self.corpus.chunk_length)
+            for group, position, length in rows
+            for example in _examples_for(
+                group, position, length, self.corpus.chunk_length
+            )
         ]
         window = self.streaming.planning_window_examples
         for start in range(0, len(examples), window):
             for batch in _window_batches(
                 examples[start : start + window], self.config, epoch
             ):
-                yield _PlannedBatch(group=group, examples=batch)
+                yield _PlannedBatch(groups=groups, examples=batch)
 
     def _eligible_rows(self, group: _RowGroup) -> list[tuple[int, int]]:
         """Return which rows of one row group the selection keeps, and how long.
@@ -770,19 +788,38 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         return self._pool
 
     def _job(self, planned: _PlannedBatch) -> _BatchJob:
-        table = self._row_group_table(planned.group)
-        game_lengths = {
-            example.position: example.game_length for example in planned.examples
+        self._tables = {
+            group: table
+            for group, table in self._tables.items()
+            if group in planned.groups
         }
-        rows = sorted(game_lengths)
-        row_index = {position: index for index, position in enumerate(rows)}
+        game_lengths: dict[_RowGroup, dict[int, int]] = {}
+        for example in planned.examples:
+            game_lengths.setdefault(example.group, {})[example.position] = (
+                example.game_length
+            )
+        sources: list[_BatchSource] = []
+        row_index: dict[tuple[_RowGroup, int], tuple[int, int]] = {}
+        for group in sorted(game_lengths, key=planned.groups.index):
+            rows = sorted(game_lengths[group])
+            for index, position in enumerate(rows):
+                row_index[group, position] = (len(sources), index)
+            sources.append(
+                _BatchSource(
+                    shard=group.shard,
+                    path=str(self.corpus.shards[group.shard].path),
+                    row_table=take_rows(self._row_group_table(group), rows),
+                    lengths=tuple(game_lengths[group][position] for position in rows),
+                )
+            )
         return _BatchJob(
-            shard=planned.group.shard,
-            path=str(self.corpus.shards[planned.group.shard].path),
-            row_table=take_rows(table, rows),
-            lengths=tuple(game_lengths[position] for position in rows),
+            sources=tuple(sources),
             entries=tuple(
-                (row_index[example.position], example.start_ply, example.length)
+                (
+                    *row_index[example.group, example.position],
+                    example.start_ply,
+                    example.length,
+                )
                 for example in planned.examples
             ),
             legal_actions=self.legal_actions,
@@ -796,18 +833,16 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         return self._reader
 
     def _row_group_table(self, group: _RowGroup) -> Any:
-        if self._table_group == group:
-            return self._table
-        reader = self._shard_reader(group.shard)
-        # One row group at a time, and the previous one released before the
-        # next is read. This is the loader's largest resident structure and the
-        # only one preparation's shard sizing decides.
-        self._table = None
-        self._table = read_normalized_row_group(
-            reader, group.row_group, _LOADER_COLUMNS
-        )
-        self._table_group = group
-        return self._table
+        # Only the current span's row groups, since `_job` releases the rest
+        # before reading any. This is the loader's largest resident structure
+        # and the only one preparation's shard sizing decides.
+        table = self._tables.get(group)
+        if table is None:
+            table = read_normalized_row_group(
+                self._shard_reader(group.shard), group.row_group, _LOADER_COLUMNS
+            )
+            self._tables[group] = table
+        return table
 
     def _drain(self) -> None:
         for _, pending in self._inflight:
@@ -818,29 +853,30 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
 def _materialize_batch(job: _BatchJob) -> SequenceBatch:
     """Decode one batch's games and pack them, in a worker or in place."""
 
-    path = Path(job.path)
-    rows = materialize_rows(job.row_table)
-    decoded: dict[int, tuple[PlyEncoding, ...]] = {}
+    rows = [materialize_rows(source.row_table) for source in job.sources]
+    decoded: dict[tuple[int, int], tuple[PlyEncoding, ...]] = {}
     examples: list[SequenceExample] = []
-    for row_index, start_ply, length in job.entries:
-        plies = decoded.get(row_index)
+    for source_index, row_index, start_ply, length in job.entries:
+        source = job.sources[source_index]
+        plies = decoded.get((source_index, row_index))
         if plies is None:
-            row = rows[row_index]
+            path = Path(source.path)
+            row = rows[source_index][row_index]
             plies = encode_game(
                 _game_from_row(row, path, row_game_id(row)),
                 legal_actions=job.legal_actions,
             )
-            if len(plies) != job.lengths[row_index]:
+            if len(plies) != source.lengths[row_index]:
                 raise DataLoadingError(
                     f"{path} game {row_game_id(row)} "
                     f"decodes to {len(plies)} action(s) where its ply count and "
-                    f"terminal action status describe {job.lengths[row_index]}"
+                    f"terminal action status describe {source.lengths[row_index]}"
                 )
-            decoded[row_index] = plies
+            decoded[source_index, row_index] = plies
         chunk = plies[start_ply : start_ply + length]
         examples.append(
             SequenceExample(
-                shard_index=job.shard,
+                shard_index=source.shard,
                 game_id=chunk[0].game_id,
                 start_ply=chunk[0].ply_index,
                 plies=chunk,
@@ -852,6 +888,7 @@ def _materialize_batch(job: _BatchJob) -> SequenceBatch:
 
 
 def _examples_for(
+    group: _RowGroup,
     position: int,
     length: int,
     chunk_length: int | None,
@@ -860,13 +897,18 @@ def _examples_for(
 
     if chunk_length is None:
         yield _Example(
-            position=position, start_ply=0, length=length, game_length=length
+            group=group,
+            position=position,
+            start_ply=0,
+            length=length,
+            game_length=length,
         )
         return
     if type(chunk_length) is not int or chunk_length < 1:
         raise ValueError("chunk_length must be a positive integer or None")
     for start in range(0, length, chunk_length):
         yield _Example(
+            group=group,
             position=position,
             start_ply=start,
             length=min(chunk_length, length - start),
@@ -950,9 +992,10 @@ def _group_key(seed: str, epoch: int, group: _RowGroup) -> bytes:
     ).digest()
 
 
-def _game_key(seed: str, epoch: int, group: _RowGroup, row: tuple[int, int]) -> bytes:
+def _game_key(seed: str, epoch: int, row: tuple[_RowGroup, int, int]) -> bytes:
+    group, position, _ = row
     return sha256(
-        f"{seed}\0{epoch}\0{group.shard}\0{group.row_group}\0{row[0]}".encode()
+        f"{seed}\0{epoch}\0{group.shard}\0{group.row_group}\0{position}".encode()
     ).digest()
 
 
