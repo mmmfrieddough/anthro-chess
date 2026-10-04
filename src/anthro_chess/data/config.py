@@ -228,8 +228,9 @@ class SelectionConfig(ConfigModel):
     is drawn above its natural rate, relative to the commonest rating: every
     rating at least ``1 / rating_balance`` as common as that one is drawn
     equally often, and rarer ones at ``rating_balance`` times their own rate.
-    One leaves the population as it comes and the limit draws every rating
-    alike. Games are thinned against a digest of their id independent of the
+    One leaves the rated population as it comes and the limit draws every
+    rating alike; a game missing a rating cannot be weighted, so it is excluded
+    as the rating bounds exclude it. Games are thinned against a digest of their id independent of the
     subsample's, so at least one in ``rating_balance`` survives. Rating is the
     one axis that can be reweighted this way, because the model is conditioned
     on it; ``docs/decisions/0016-sampling-axes-versus-measured-distributions.md``
