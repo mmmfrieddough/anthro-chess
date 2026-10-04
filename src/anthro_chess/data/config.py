@@ -223,6 +223,19 @@ class SelectionConfig(ConfigModel):
     what makes ``maximum_games`` the dial that has to rank its candidates, and
     so the one bounded by what a loader can hold; ``fraction`` cuts a rank space
     and is not.
+
+    ``rating_balance`` reweights rather than filters. It is the most a rating
+    is drawn above its natural rate, relative to the commonest rating: every
+    rating at least ``1 / rating_balance`` as common as that one is drawn
+    equally often, and rarer ones at ``rating_balance`` times their own rate.
+    A balance of one leaves the rated population as it comes, and a large
+    enough one draws every rating alike. A game missing a rating cannot be
+    weighted, so it is excluded as the rating bounds exclude it. Games are
+    thinned on a digest of their id independent of the subsample's, and at
+    least one in ``rating_balance`` survives. Rating is the one axis that can
+    be reweighted this way, because the model is conditioned on it;
+    ``docs/decisions/0016-sampling-axes-versus-measured-distributions.md``
+    closes the others.
     """
 
     speed: Speed | None = None
@@ -236,6 +249,7 @@ class SelectionConfig(ConfigModel):
     require_ratings: StrictBool = False
     fraction: float | None = Field(default=None, gt=0.0, le=1.0)
     maximum_games: int | None = Field(default=None, ge=1)
+    rating_balance: float | None = Field(default=None, ge=1.0)
     seed: str = Field(default="anthro-training-selection-v1", min_length=1)
 
     @model_validator(mode="after")

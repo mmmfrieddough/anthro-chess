@@ -9,6 +9,8 @@ exception taken to the preparation-filter rule below, and says what that costs.
 `0062-the-breadth-corpus-filters-for-validity-alone.md` applies that rule to the
 corpus the evaluation core is designated from, and names the axes it keeps
 whole.
+`0092-the-rating-axis-is-balanced-by-thinning-at-four.md` reweights the one
+axis this record opens, and says how far.
 
 ## Context
 

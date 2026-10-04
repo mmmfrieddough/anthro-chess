@@ -25,6 +25,7 @@ from anthro_chess.data.artifacts import (
     normalized_shard_paths,
     validate_manifest_outputs,
 )
+from anthro_chess.data.schema import NormalizedColumn, row_game_id
 from anthro_chess.data.streaming import (
     ShardedSelection,
     shard_loader_configuration_sha256,
@@ -1202,3 +1203,137 @@ def test_a_game_that_decodes_to_another_length_than_planned_fails_clearly(
     with pytest.raises(DataLoadingError, match="decodes to"):
         next(loader)
     loader.close()
+
+
+def _skewed_rows(
+    normalized_row: Callable[..., dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return a corpus nine parts one rating to one part another."""
+
+    return [
+        normalized_row(
+            game_id,
+            split="train",
+            plies=6,
+            rating=2500 if game_id % 10 == 0 else 1500,
+        )
+        for game_id in range(1, 401)
+    ]
+
+
+def _composed(balance: float, **selection: Any) -> SelectionConfig:
+    return SelectionConfig(rating_balance=balance, **selection)
+
+
+def _games(corpus: Corpus, selection: SelectionConfig) -> set[int]:
+    loader = _loader(
+        corpus, SequenceLoaderConfig(split="train", batch_size=4, selection=selection)
+    )
+    try:
+        return {game for game, _ in _drain(loader)}
+    finally:
+        loader.close()
+
+
+def test_a_composition_thins_the_common_rating_and_keeps_the_rare_one(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    rows = _skewed_rows(normalized_row)
+    corpus = _corpus(write_corpus, tmp_path, rows, games_per_shard=50)
+    rare = {
+        row_game_id(row)
+        for row in rows
+        if row[NormalizedColumn.WHITE_NORMALIZED_RATING] == 2500
+    }
+
+    composed = _games(corpus, _composed(100.0))
+
+    assert rare <= composed
+    assert 0.05 < len(composed - rare) / 360 < 0.2
+    assert _games(corpus, _composed(1.0)) == _games(corpus, SelectionConfig())
+
+
+def test_a_composition_thins_independently_of_a_subsample(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """Drawn on one digest, the two would keep a nested set rather than both."""
+
+    corpus = _corpus(
+        write_corpus, tmp_path, _skewed_rows(normalized_row), games_per_shard=50
+    )
+
+    both = _games(corpus, _composed(100.0, fraction=0.5))
+
+    assert both == _games(corpus, _composed(100.0)) & _games(
+        corpus, SelectionConfig(fraction=0.5)
+    )
+
+
+def test_a_composed_cursor_resumes_only_under_the_same_composition(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    corpus = _corpus(
+        write_corpus, tmp_path, _skewed_rows(normalized_row), games_per_shard=50
+    )
+
+    def config(balance: float) -> SequenceLoaderConfig:
+        return SequenceLoaderConfig(
+            split="train", batch_size=4, selection=_composed(balance)
+        )
+
+    loader = _loader(corpus, config(100.0))
+    next(loader)
+    saved = loader.state()
+    expected = _drain(loader)
+    loader.close()
+
+    resumed = _loader(corpus, config(100.0))
+    resumed.load_state(saved)
+    assert _drain(resumed) == expected
+    resumed.close()
+
+    weaker = _loader(corpus, config(3.0))
+    with pytest.raises(DataLoadingError, match="different"):
+        weaker.load_state(saved)
+    weaker.close()
+
+
+def test_the_resolution_records_what_the_composition_does(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    corpus = _corpus(
+        write_corpus, tmp_path, _skewed_rows(normalized_row), games_per_shard=50
+    )
+    loader = _loader(
+        corpus, SequenceLoaderConfig(split="train", selection=_composed(100.0))
+    )
+
+    record = loader.resolution.as_record()
+    composition = record["rating_composition"]
+    assert isinstance(composition, dict)
+    assert composition["retained_decision_share"] == pytest.approx(0.2, rel=0.01)
+    assert composition["fit_games"] == 400
+    assert "rating_composition" not in loader.resolution.as_identity_record()
+    loader.close()
+
+
+def test_the_eager_loader_refuses_a_composition(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    corpus = _corpus(write_corpus, tmp_path, _skewed_rows(normalized_row))
+
+    with pytest.raises(DataLoadingError, match="shard-backed"):
+        SequenceDataLoader.from_parquet(
+            [shard.path for shard in corpus[0]],
+            SequenceLoaderConfig(split="train", selection=_composed(4.0)),
+        )
