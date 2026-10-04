@@ -341,6 +341,9 @@ the shard-backed loader balances. It fits the density from a sample of the
 corpus when it opens, and the run records what the fit says the balance does:
 the range drawn equally often, the share retained, the effective sample size,
 and each rating bucket's and speed's share before and after.
+[`0092-the-rating-axis-is-balanced-by-thinning-at-four.md`](decisions/0092-the-rating-axis-is-balanced-by-thinning-at-four.md)
+records why it thins, how the budget is shared across axes, and the value the
+target run takes.
 
 Ply-count, result, and opening filters are deliberately absent. Benchmarks
 measure the model's own distribution over those, so narrowing training on them
