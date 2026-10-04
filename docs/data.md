@@ -822,16 +822,20 @@ row it came from, so this suits checked-in fixtures and bounded proof slices
 and reaches neither the memory nor the startup time a corpus needs.
 
 The **shard-backed** loader decodes a batch at a time and holds nothing per
-game. An epoch orders row groups, orders the games inside each one, and cuts
-that stream into planning windows. A window is where length buckets fill and
-flush, and where a cut game's two halves can still meet, so every example in a
-batch comes from one row group and a batch is read with a single columnar take.
+game. An epoch orders row groups, takes them in consecutive spans of
+`interleaved_row_groups`, shuffles the games of a span together, and cuts that
+stream into planning windows. A window is where length buckets fill and flush,
+and where a cut game's two halves can still meet, so every example in a batch
+comes from one span and a batch is read with one columnar take per row group in
+it. In a corpus where a row group is a shard of one day's games, a span of one
+trains on a single day for as long as that shard lasts, and a wider span mixes
+that many days into every batch.
 Flushing at a window boundary rather than an epoch boundary is the one visible
 cost: a window ends with a short batch per occupied bucket, or with one short
 batch where it packs decisions, which `drop_last` drops and otherwise leaves
 slightly small.
 
-Because a batch never spans row groups, which rows a row group contributes and
+Because a batch never leaves its span, which rows a row group contributes and
 how long each one decodes to are derived from that row group when the plan
 reaches it, from columns cheap enough to project. A game's decoded length
 follows from its ply count and whether a terminal action was appended, so no
@@ -843,13 +847,13 @@ thousand costs. A selection that filters has to look, and that pass is the one
 cost here that follows corpus size. A selection that balances its rating axis
 also reads a fixed sample of row groups at the open, to fit the density it
 balances against. Either way what a run pays to plan follows
-what it reads, and what stays resident is one row group's projected columns, one
+what it reads, and what stays resident is one span's projected columns, one
 entry per row group, and the batches in flight.
 A resumed run reaches its saved cursor by arithmetic over the epoch order and
-plans only the row group the cursor names, so a run interrupted weeks into an
-epoch restarts at the cost of one projected read. That is why the cursor records
-its row group rather than only its place in the epoch: finding the one from the
-other means planning everything before it.
+plans only the span the cursor names, so a run interrupted weeks into an epoch
+restarts at the cost of one span's projected reads. That is why the cursor
+records its span rather than only its place in the epoch: finding the one from
+the other means planning everything before it.
 
 Three things follow from holding no game. A run does not record which games its
 selection kept, because naming them means enumerating a split that reaches
