@@ -1339,9 +1339,7 @@ def _warn_of_repetition(
 ) -> None:
     """Say when a balanced selection holds fewer decisions than the run reads.
 
-    The balance is the one dial whose cost is counted in data, so it is the one
-    that can push a run past what its selection holds without anything else
-    changing. Only a packed batch fixes its size in decisions.
+    Only a packed batch fixes its size in decisions.
     """
 
     loader = config.train.loader

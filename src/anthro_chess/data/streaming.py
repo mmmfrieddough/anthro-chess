@@ -119,8 +119,8 @@ _FILTER_COLUMNS = (
     NormalizedColumn.TIME_INCREMENT_MS,
 )
 #: How many row groups, spread evenly over the corpus, a rating composition is
-#: fitted from. About a million and a half games of the widened corpus, which
-#: holds its rarest 200-point band at thousands.
+#: fitted from: enough that the rarest 200-point rating band still numbers
+#: thousands of games.
 _COMPOSITION_FIT_ROW_GROUPS = 32
 
 
@@ -358,7 +358,8 @@ def _scan_row_group(
     wants a game's length, so the projection follows what the caller asked for
     rather than the union of the two. A game a composition thins out is not
     yielded at all, as one outside a subsample is not: neither is a rejection.
-    The row's projected values come with it wherever a filter had to read them.
+    The row's projected values come with it whenever a filter or the subsample
+    read them.
     """
 
     filtered = _filters_rows(selection, marked_digests)

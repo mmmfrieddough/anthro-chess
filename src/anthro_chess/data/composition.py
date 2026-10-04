@@ -45,7 +45,7 @@ class RatingComposition:
 
     balance: float
     acceptance: tuple[float, ...]
-    #: What the fit sample says the composition does, for the run record.
+    #: What the fit sample says the composition does.
     report: dict[str, Any]
 
     @property
@@ -105,10 +105,9 @@ def fit_rating_composition(
 ) -> RatingComposition:
     """Fit a composition from a sample of games the selection would draw.
 
-    Each game is its two ratings, its speed class, and its decision count, and
-    the density is over decisions by the rating of the player making them,
-    because that is the rating the model is conditioned on at each one. The
-    speed class is only reported on: thinning by rating moves that mix too.
+    The density is over decisions by the rating of the player making them,
+    because that is the rating the model is conditioned on at each one.
+    ``speed`` is only reported on, since thinning by rating moves that mix too.
     ``population_games`` is how many games the sample stands for.
     """
 
