@@ -468,7 +468,7 @@ identity and provenance, the ruleset and initial position, the result, and the
 rating and time-control metadata a decision may condition on. Per-ply values are
 list columns aligned to the action sequence rather than rows keyed by ply, so a
 game is one row and its plies travel with it — which is what lets a batch's rows
-be read with a single columnar take.
+be read from a row group with a single columnar take.
 
 Optional values carry a status beside them rather than a sentinel, because
 absent and zero are different facts: no clock data is not a move that consumed
@@ -867,7 +867,7 @@ approximated: a run would otherwise record a size it did not train on.
 
 The two produce different orders and neither is a defect. A global shuffle over
 a corpus means a seek per example, so the shard-backed loader shuffles row
-groups and shuffles within them instead. Their identities differ accordingly,
+groups and then the games within each span of them instead. Their identities differ accordingly,
 which is what stops a run from continuing across the two and training on an
 order it did not record.
 
@@ -890,8 +890,9 @@ every game in a batch, and the parent is the one process every batch passes
 through, so it gathers the rows and leaves the per-value work to the pool.
 Worker count and prefetch depth change how fast the same batches arrive and
 never which examples share one, so they stay out of the identity a resumed run
-has to match. Preparation's shard and row-group sizing is the remaining bound,
-because a row group is the unit a batch's rows are read from.
+has to match. Preparation's shard and row-group sizing, times the span, is the
+remaining bound, because a row group is the unit a batch's rows are read from
+and a span holds that many at once.
 
 **The depth is a rate, not an order.** That is worth stating because the two
 dials were once coupled in a way that made it look otherwise. Jobs were
