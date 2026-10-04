@@ -70,6 +70,7 @@ on that draw. Held-out loss deltas, with negative better:
 
 | | below 1200 | 1200 to 1599 | 1600 to 1999 | 2000 and up |
 | --- | ---: | ---: | ---: | ---: |
+| balance 2, draw 1 | -0.0018 | -0.0003 | +0.0001 | -0.0039 |
 | balance 4, draw 1 | -0.0046 | +0.0005 | +0.0010 | -0.0063 |
 | balance 4, draw 2 | -0.0066 | -0.0026 | -0.0028 | -0.0111 |
 | balance 4 minus uniform thinning at its retention, draw 1 | -0.0049 | +0.0009 | +0.0014 | -0.0060 |
@@ -80,6 +81,7 @@ on that draw. Held-out loss deltas, with negative better:
 
 | | T=0 | T=0.7 | T=1.0 |
 | --- | ---: | ---: | ---: |
+| balance 2, draw 1 | +0.004 | -0.020 | -0.005 |
 | balance 4, draw 1 | +0.030 | +0.038 | +0.027 |
 | balance 4, draw 2 | +0.025 | +0.021 | +0.005 |
 | balance 4 minus uniform thinning, draw 1 | +0.032 | +0.064 | +0.038 |
@@ -88,9 +90,11 @@ on that draw. Held-out loss deltas, with negative better:
 The tails gain on both draws by the same margin over the middle, 0.0062. A draw
 change alone moves every band together. Uniform thinning to the same retained
 share, which reads as many shards, moves no band and lowers the slope, so the
-gain belongs to the balance and not to the shard diversity it brings. Balance 8
-gains nothing over 4 in the bands measured and costs the middle about three
-replicate deviations.
+gain belongs to the balance and not to the shard diversity it brings. Balance 2
+buys under half of the tail gain and none of the slope. Balance 8 gains nothing
+over 4 in the bands measured, gives back the slope at two of three
+temperatures, and costs the middle about three replicate deviations. The curve
+turns between 4 and 8.
 
 ## What This Does Not Claim
 
