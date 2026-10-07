@@ -826,8 +826,8 @@ game. An epoch orders row groups, takes them in consecutive spans of
 `interleaved_row_groups`, shuffles the games of a span together, and cuts that
 stream into planning windows. A window is where length buckets fill and flush,
 and where a cut game's two halves can still meet, so every example in a batch
-comes from one span and a batch is read with one columnar take per row group in
-it. In a corpus where a row group is a shard of one day's games, a span of one
+comes from one span. A span's row groups are read once and combined, and a batch
+is read from them with a single columnar take. In a corpus where a row group is a shard of one day's games, a span of one
 trains on a single day for as long as that shard lasts, and a wider span mixes
 that many days into every batch.
 Flushing at a window boundary rather than an epoch boundary is the one visible
