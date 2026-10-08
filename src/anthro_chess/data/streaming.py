@@ -825,12 +825,10 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
     def _span_rows(self, groups: tuple[_RowGroup, ...]) -> Any:
         """Return one span's row groups as a single table, read once per span.
 
-        One table rather than one per row group, because a batch drawn across
-        a span would otherwise pay a take and a pickled table per row group it
-        touches, in the process every batch passes through. The previous span
-        is released before the next is read, and combining briefly holds the
-        span twice: this is the loader's largest resident structure and the only
-        one preparation's shard sizing decides.
+        Combined so a batch drawn across the span costs one take and one pickled
+        table. This is the loader's largest resident structure and the only one
+        preparation's shard sizing decides, so the previous span is dropped
+        before the next is read; combining still holds the new span twice.
         """
 
         if self._span != groups:
