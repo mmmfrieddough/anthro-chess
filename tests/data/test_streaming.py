@@ -653,6 +653,67 @@ def test_resume_rejects_a_window_that_would_replan_the_epoch(
     replanned.close()
 
 
+def test_interleaving_draws_one_batch_from_several_row_groups(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    rows = _rows(normalized_row, 64)
+    corpus = _corpus(write_corpus, tmp_path, rows, games_per_shard=4)
+    shard_of = {row_game_id(row): index // 4 for index, row in enumerate(rows)}
+    config = SequenceLoaderConfig(
+        split="train", positions_per_batch=24, shuffle=True, seed="interleave"
+    )
+
+    def epoch(interleaved: int) -> list[list[tuple[int, int]]]:
+        loader = _loader(
+            corpus, config, StreamingLoaderConfig(interleaved_row_groups=interleaved)
+        )
+        try:
+            return [_packed_keys(batch) for batch in loader]
+        finally:
+            loader.close()
+
+    alone = epoch(1)
+    interleaved = epoch(4)
+    shards = [{shard_of[game] for game, _ in batch} for batch in interleaved]
+
+    assert all(len({shard_of[game] for game, _ in batch}) == 1 for batch in alone)
+    assert max(len(spanned) for spanned in shards) > 1
+    assert max(len(spanned) for spanned in shards) <= 4
+    assert sorted(key for batch in interleaved for key in batch) == sorted(
+        key for batch in alone for key in batch
+    )
+
+
+def test_an_interleaved_cursor_resumes_only_under_the_same_interleave(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    corpus = _corpus(
+        write_corpus, tmp_path, _rows(normalized_row, 48), games_per_shard=4
+    )
+    config = SequenceLoaderConfig(split="train", positions_per_batch=16, seed="span")
+    streaming = StreamingLoaderConfig(interleaved_row_groups=4)
+
+    complete = _drain_packed(_loader(corpus, config, streaming))
+    interrupted = _loader(corpus, config, streaming)
+    consumed = [key for _ in range(10) for key in _packed_keys(next(interrupted))]
+    saved = interrupted.state()
+    interrupted.close()
+    assert saved.group_index > 0
+
+    resumed = _loader(corpus, config, streaming)
+    resumed.load_state(saved)
+    assert consumed + _drain_packed(resumed) == complete
+
+    replanned = _loader(corpus, config, StreamingLoaderConfig(interleaved_row_groups=2))
+    with pytest.raises(DataLoadingError, match="different loader configuration"):
+        replanned.load_state(saved)
+    replanned.close()
+
+
 def test_worker_count_and_prefetch_depth_leave_the_cursor_alone(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],

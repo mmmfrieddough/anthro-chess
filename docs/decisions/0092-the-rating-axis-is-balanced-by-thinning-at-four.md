@@ -7,7 +7,9 @@ Date: 2026-10-03
 Accepted. Answers `#498`. Applies
 `0016-sampling-axes-versus-measured-distributions.md`, which opens rating to
 reweighting because the model is conditioned on it and closes speed until
-`#497` gives the model the clock.
+`#497` gives the model the clock. Refined by
+`0093-the-target-run-draws-each-batch-across-sixteen-days.md`, which finds that
+most of the draw noise below came from training on one day at a time.
 
 ## Context
 

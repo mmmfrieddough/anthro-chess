@@ -261,7 +261,7 @@ def row_group_column(table: Any, column: str) -> list[Any]:
 
 
 def take_rows(table: Any, positions: Sequence[int]) -> Any:
-    """Return the named row positions of a row-group table, still columnar.
+    """Return the named row positions of a columnar table, still columnar.
 
     Gathering the rows is a buffer copy; turning them into dictionaries of
     Python values is an object per field, and this leaves that half to the
@@ -269,6 +269,20 @@ def take_rows(table: Any, positions: Sequence[int]) -> Any:
     """
 
     return table.take(list(positions))
+
+
+def concat_row_groups(tables: Sequence[Any]) -> Any:
+    """Return row-group tables as one table, their rows in the order given.
+
+    Combined rather than left chunked, because a take across chunks pays to
+    concatenate them again on every take.
+    """
+
+    try:
+        import pyarrow as pa
+    except ImportError as error:  # pragma: no cover - exercised by wheel smoke only
+        raise DataLoadingError(_PARQUET_MISSING) from error
+    return pa.concat_tables(tables).combine_chunks()
 
 
 def list_column_lengths(table: Any, column: str) -> list[int]:
