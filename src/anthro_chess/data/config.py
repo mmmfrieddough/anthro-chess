@@ -374,8 +374,9 @@ class StreamingLoaderConfig(ConfigModel):
     the memory held in flight as much as raising the depth does.
 
     The remaining bound is only half configured here. Materialization holds
-    ``interleaved_row_groups`` row groups at a time, and preparation's shard and
-    row-group sizing is what caps each of them; ``docs/data.md`` owns that end.
+    ``interleaved_row_groups`` row groups at a time, twice that while it
+    combines a new span, and preparation's shard and row-group sizing is what
+    caps each of them; ``docs/data.md`` owns that end.
     """
 
     planning_window_examples: int = Field(default=16384, ge=1)

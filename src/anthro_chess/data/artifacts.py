@@ -261,7 +261,7 @@ def row_group_column(table: Any, column: str) -> list[Any]:
 
 
 def take_rows(table: Any, positions: Sequence[int]) -> Any:
-    """Return the named row positions of a row-group table, still columnar.
+    """Return the named row positions of a columnar table, still columnar.
 
     Gathering the rows is a buffer copy; turning them into dictionaries of
     Python values is an object per field, and this leaves that half to the

@@ -789,10 +789,13 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
 
     def _job(self, planned: _PlannedBatch) -> _BatchJob:
         table = self._span_rows(planned.groups)
+        example_rows = [
+            self._span_offsets[example.group] + example.position
+            for example in planned.examples
+        ]
         game_lengths: dict[int, int] = {}
         shards: dict[int, int] = {}
-        for example in planned.examples:
-            row = self._span_offsets[example.group] + example.position
+        for example, row in zip(planned.examples, example_rows, strict=True):
             game_lengths[row] = example.game_length
             shards[row] = example.group.shard
         rows = sorted(game_lengths)
@@ -806,12 +809,8 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
                 for shard in set(shards.values())
             },
             entries=tuple(
-                (
-                    row_index[self._span_offsets[example.group] + example.position],
-                    example.start_ply,
-                    example.length,
-                )
-                for example in planned.examples
+                (row_index[row], example.start_ply, example.length)
+                for example, row in zip(planned.examples, example_rows, strict=True)
             ),
             legal_actions=self.legal_actions,
             packed_width=self.config.positions_per_batch,
@@ -829,11 +828,13 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         One table rather than one per row group, because a batch drawn across
         a span would otherwise pay a take and a pickled table per row group it
         touches, in the process every batch passes through. The previous span
-        is released before the next is read: this is the loader's largest
-        resident structure and the only one preparation's shard sizing decides.
+        is released before the next is read, and combining briefly holds the
+        span twice: this is the loader's largest resident structure and the only
+        one preparation's shard sizing decides.
         """
 
         if self._span != groups:
+            self._span = ()
             self._span_table = None
             tables = [
                 read_normalized_row_group(
@@ -841,13 +842,9 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
                 )
                 for group in groups
             ]
+            starts = accumulate((table.num_rows for table in tables), initial=0)
             self._span_offsets = dict(
-                # The running total has one more entry than there are groups.
-                zip(
-                    groups,
-                    accumulate((table.num_rows for table in tables), initial=0),
-                    strict=False,
-                )
+                zip(groups, list(starts)[: len(groups)], strict=True)
             )
             self._span_table = concat_row_groups(tables)
             self._span = groups

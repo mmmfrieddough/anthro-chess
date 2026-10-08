@@ -468,7 +468,7 @@ identity and provenance, the ruleset and initial position, the result, and the
 rating and time-control metadata a decision may condition on. Per-ply values are
 list columns aligned to the action sequence rather than rows keyed by ply, so a
 game is one row and its plies travel with it — which is what lets a batch's rows
-be read from a row group with a single columnar take.
+be read with a single columnar take.
 
 Optional values carry a status beside them rather than a sentinel, because
 absent and zero are different facts: no clock data is not a move that consumed
@@ -827,9 +827,9 @@ game. An epoch orders row groups, takes them in consecutive spans of
 stream into planning windows. A window is where length buckets fill and flush,
 and where a cut game's two halves can still meet, so every example in a batch
 comes from one span. A span's row groups are read once and combined, and a batch
-is read from them with a single columnar take. In a corpus where a row group is a shard of one day's games, a span of one
-trains on a single day for as long as that shard lasts, and a wider span mixes
-that many days into every batch.
+is read from them with a single columnar take. In a corpus where a row group is
+a shard of one day's games, a span of one trains on a single day for as long as
+that shard lasts, and a wider span mixes that many days into every batch.
 Flushing at a window boundary rather than an epoch boundary is the one visible
 cost: a window ends with a short batch per occupied bucket, or with one short
 batch where it packs decisions, which `drop_last` drops and otherwise leaves
@@ -892,7 +892,7 @@ Worker count and prefetch depth change how fast the same batches arrive and
 never which examples share one, so they stay out of the identity a resumed run
 has to match. Preparation's shard and row-group sizing, times the span, is the
 remaining bound, because a row group is the unit a batch's rows are read from
-and a span holds that many at once.
+and a span holds that many at once, twice that while a new span is combined.
 
 **The depth is a rate, not an order.** That is worth stating because the two
 dials were once coupled in a way that made it look otherwise. Jobs were
