@@ -162,8 +162,8 @@ def test_clock_pressure_reads_the_time_the_mover_had_left_before_moving(
 
     slices = [position_slices(ply) for ply in encode_game(game)]
 
-    # The first two decisions each read a full clock; black's last reading is
-    # unknown, so its second decision has no pressure to report.
+    # Each side's first decision reads the initial clock. Black's clock after
+    # its first move is unknown, so its second decision has no pressure.
     assert [item.clock_pressure for item in slices] == [
         "clock_30s_plus",
         "clock_30s_plus",

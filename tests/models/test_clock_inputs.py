@@ -121,8 +121,9 @@ def test_a_missing_clock_is_an_absence_rather_than_a_zero_clock() -> None:
 
     features = _read_features(model, _batch(_example(clocks_ms=clocks)))[0]
 
-    # Black's clock after its first move is unknown, so the opponent's clock at
-    # the third decision and both times that difference it go absent with it.
+    # Black's clock after its first move is unknown. It is the opponent's clock
+    # at the third decision and the mover's at the fourth, and each move time
+    # differenced from it goes absent with it.
     assert features[2, 6:].tolist() == [1, 1, 1, 0, 1, 0]
     assert features[3, 6:].tolist() == [1, 1, 0, 1, 0, 1]
     assert features[2, 3].item() == 0.0
