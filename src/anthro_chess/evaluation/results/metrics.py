@@ -1418,8 +1418,8 @@ DEPENDENCY_CLOCK_ABSENT_DEGRADATION = register_metric(
         summary=(
             "Increase in held-out move loss when the whole time context, the "
             "control and the clocks, is marked absent. What serving a "
-            "clock-reading model without a clock costs; zero for a model that "
-            "reads none."
+            "clock-reading model without a clock costs; not measured for a "
+            "model that reads none."
         ),
         cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,

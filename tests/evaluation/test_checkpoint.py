@@ -482,8 +482,6 @@ def test_dependency_tests_report_degradation_without_a_verdict(
     assert {item.conditioning.name for item in dependency.corruptions} == {
         "shuffled",
         "absent",
-        "clock_absent",
-        "clock_state_absent",
     }
     for item in dependency.corruptions:
         assert item.position_count == dependency.rated_position_count
@@ -512,11 +510,9 @@ def test_dependency_tests_report_degradation_without_a_verdict(
     assert "dependency.rating_absent_degradation" in measurements
     assert "dependency.rating_anchor_policy_divergence" in measurements
     assert "dependency.rating_cross_conditioning_penalty" in measurements
-    assert "dependency.clock_absent_degradation" in measurements
-    assert "dependency.clock_state_absent_degradation" in measurements
 
 
-def test_a_model_that_reads_no_clock_loses_nothing_without_one(
+def test_only_a_model_that_reads_the_clock_is_scored_without_one(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
     training_run: Callable[..., Path],
@@ -524,15 +520,21 @@ def test_a_model_that_reads_no_clock_loses_nothing_without_one(
     normalized, manifest = corpus(tmp_path / "corpus")
     pool = _freeze(tmp_path, normalized, manifest)
     checkpoint = training_run(
-        tmp_path / "run", normalized=normalized, manifest=manifest
+        tmp_path / "run", normalized=normalized, manifest=manifest, clock_inputs=True
     )
 
-    dependency = _measure_dependency(_dependency_config(pool, checkpoint)).dependency
+    result = _measure_dependency(_dependency_config(pool, checkpoint))
 
     for kind in (ConditioningKind.CLOCK_ABSENT, ConditioningKind.CLOCK_STATE_ABSENT):
-        result = dependency.corruption(kind)
-        assert result is not None
-        assert result.degradation == 0.0
+        assert result.dependency.corruption(kind) is not None
+    measurements = {
+        item.metric
+        for envelope in result.envelopes
+        if envelope.kind == DEPENDENCY_KIND
+        for item in envelope.measurements
+    }
+    assert "dependency.clock_absent_degradation" in measurements
+    assert "dependency.clock_state_absent_degradation" in measurements
 
 
 def test_the_dependency_reading_carries_a_spread_for_what_it_can_resample(
@@ -595,7 +597,7 @@ def test_the_dependency_tests_score_each_conditioning_once(
     training_run: Callable[..., Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Nine passes over the view, one per distinct conditioning.
+    """Seven passes over the view, one per distinct conditioning.
 
     The anchor comparison scores two fixed conditionings the cross-conditioning
     table also wants, and the trajectory needs the true-conditioning policy the
@@ -635,7 +637,7 @@ def test_the_dependency_tests_score_each_conditioning_once(
     _measure_dependency(_dependency_config(pool, checkpoint, view=view))
 
     assert batches > 0
-    assert calls == 9 * batches
+    assert calls == 7 * batches
 
 
 def test_absent_conditioning_changes_what_the_model_is_shown(

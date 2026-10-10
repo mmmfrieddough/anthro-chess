@@ -308,14 +308,7 @@ def legal_move_count_bucket(legal_move_count: int) -> str:
 
     if type(legal_move_count) is not int or legal_move_count < 1:
         raise ValueError("legal move count must be a positive integer")
-    for name, minimum, maximum in LEGAL_MOVE_COUNT_BUCKETS:
-        if legal_move_count >= minimum and (
-            maximum is None or legal_move_count < maximum
-        ):
-            return name
-    raise ValueError(
-        f"legal move count is outside configured buckets: {legal_move_count}"
-    )
+    return _bucket(legal_move_count, LEGAL_MOVE_COUNT_BUCKETS)
 
 
 def clock_pressure_bucket(clock_ms: int | None) -> str | None:
@@ -325,10 +318,16 @@ def clock_pressure_bucket(clock_ms: int | None) -> str | None:
         return None
     if type(clock_ms) is not int or clock_ms < 0:
         raise ValueError("a clock must be a nonnegative integer")
-    for name, minimum, maximum in CLOCK_PRESSURE_BUCKETS:
-        if clock_ms >= minimum and (maximum is None or clock_ms < maximum):
+    return _bucket(clock_ms, CLOCK_PRESSURE_BUCKETS)
+
+
+def _bucket(value: int, buckets: Sequence[tuple[str, int, int | None]]) -> str:
+    """Return the name of the half-open interval holding ``value``."""
+
+    for name, minimum, maximum in buckets:
+        if value >= minimum and (maximum is None or value < maximum):
             return name
-    raise ValueError(f"clock is outside configured buckets: {clock_ms}")
+    raise ValueError(f"{value} is outside configured buckets")
 
 
 def rating_band_name(

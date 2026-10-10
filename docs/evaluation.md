@@ -1081,9 +1081,10 @@ dependency treatment in the ordinary sense if it did.
 The clock is read by absence alone, in two forms: the whole time context
 withheld, and the clocks withheld with the control kept. Those are the two
 contexts a clock-reading model is served with when no live clock reaches it, so
-each degradation is what serving that way costs, and a model that reads no clock
-reports zero for both. Training hides each on a share of decisions, so unlike
-the rating's absence these are trained inputs.
+each degradation is what serving that way costs. A model that reads no clock is
+not scored without one, since it would only repeat its true pass. Training hides
+each on a share of decisions, so unlike the rating's absence these are trained
+inputs.
 
 Direction matters as well as magnitude. Evaluating each context slice under
 each conditioning value produces a cross-conditioning comparison whose best

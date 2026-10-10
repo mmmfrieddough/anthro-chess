@@ -618,17 +618,16 @@ def model_identity(config: MoveModelConfig) -> dict[str, object]:
     code would produce should not have to allocate a network to do it.
     """
 
-    config_record = config.model_dump(mode="json")
-    if not config.clock_inputs:
-        for name in _CLOCK_CONFIG_FIELDS:
-            del config_record[name]
     return {
         "name": "anthro-move-model",
         # Version 7 is the architecture 0070 records: one decision per forward
         # pass, history stacked into the square tokens, and the board flipped to
         # the side to move. No version 6 checkpoint can be read.
         "version": 7,
-        "config": config_record,
+        "config": config.model_dump(
+            mode="json",
+            exclude=None if config.clock_inputs else set(_CLOCK_CONFIG_FIELDS),
+        ),
         "action_vocabulary": action_vocabulary_identity(),
         "encoding": encoding_identity(),
         "rating_conditioning": "square-token-input-embedding",

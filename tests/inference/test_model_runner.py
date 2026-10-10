@@ -597,7 +597,7 @@ def _write_run(
 ) -> Path:
     torch.manual_seed(seed)
     path.mkdir(parents=True)
-    config = tiny_model_config().model_copy(update={"clock_inputs": clock_inputs})
+    config = tiny_model_config(clock_inputs=clock_inputs)
     if history_positions is not None:
         config = config.model_copy(update={"history_positions": history_positions})
     model = MoveModel(config)

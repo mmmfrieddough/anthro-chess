@@ -8,6 +8,7 @@ from collections.abc import Sequence
 import chess
 import pytest
 import torch
+from tiny_models import tiny_model_config
 from torch import nn
 
 from anthro_chess.chess import encode_move
@@ -34,19 +35,7 @@ _CLOCKS_MS = (59_000, 58_000, 56_000, 58_000)
 def _config(
     *, clock_inputs: bool = True, clock_dropout: float = 0.0
 ) -> MoveModelConfig:
-    return MoveModelConfig(
-        piece_embedding_dim=2,
-        model_dim=16,
-        attention_heads=2,
-        layers=1,
-        feedforward_dim=24,
-        history_positions=3,
-        history_dropout=0.0,
-        geometric_token_dim=4,
-        geometric_bias_dim=8,
-        clock_inputs=clock_inputs,
-        clock_dropout=clock_dropout,
-    )
+    return tiny_model_config(clock_inputs=clock_inputs, clock_dropout=clock_dropout)
 
 
 def _example(
@@ -56,18 +45,12 @@ def _example(
     increment_ms: int | None = _INCREMENT_MS,
     clocks_ms: Sequence[int | None] = _CLOCKS_MS,
 ) -> SequenceExample:
-    board = chess.Board()
-    action_ids = []
-    for text in _MOVES:
-        move = chess.Move.from_uci(text)
-        action_ids.append(encode_move(move))
-        board.push(move)
     plies = encode_game(
         GameEncodingInput(
             game_id=game_id,
             ruleset="standard",
             initial_position=chess.STARTING_FEN,
-            action_ids=tuple(action_ids),
+            action_ids=tuple(encode_move(chess.Move.from_uci(m)) for m in _MOVES),
             white_normalized_rating=1500,
             black_normalized_rating=1500,
             time_initial_ms=initial_ms,

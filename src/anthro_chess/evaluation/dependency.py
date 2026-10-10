@@ -11,7 +11,8 @@ Three forms are computed, each answering more than the last:
   every game and the rating-absent embedding is never trained.
   The clock is corrupted only by absence, of the whole time context or of
   the clock state alone, because those are the two contexts a clock-reading
-  model is served with when no live clock reaches it.
+  model is served with when no live clock reaches it. A model that reads no
+  clock is not scored for either.
 - **cross-conditioning** shows direction. Scoring every rating slice under
   every conditioning value should put each slice's best result on the matching
   pair, which separates a model that reacts to the input from one that learned
