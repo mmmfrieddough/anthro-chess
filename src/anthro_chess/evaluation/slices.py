@@ -179,6 +179,16 @@ LEGAL_MOVE_COUNT_BUCKETS: tuple[tuple[str, int, int | None], ...] = (
     ("26_plus", 26, None),
 )
 
+#: Half-open intervals of the mover's own clock, in milliseconds, before the
+#: move. Comparable work drops or filters every decision under thirty seconds,
+#: so the slice above it is the one their figures describe, and ten seconds
+#: separates the scramble from the merely short.
+CLOCK_PRESSURE_BUCKETS: tuple[tuple[str, int, int | None], ...] = (
+    ("clock_under_10s", 0, 10_000),
+    ("clock_10s_to_30s", 10_000, 30_000),
+    ("clock_30s_plus", 30_000, None),
+)
+
 #: Total non-pawn material across both sides at or below this value marks the
 #: endgame. A queen is nine points, a rook five, a minor piece three, so a
 #: queen and rook together (fourteen) still count as a middlegame while a
@@ -203,6 +213,7 @@ class PositionSlices:
     legal_move_count_bucket: str
     rating_band: str | None
     speed: Speed | None
+    clock_pressure: str | None
 
     def as_record(self) -> dict[str, object]:
         """Return a stable JSON-serializable slice record."""
@@ -214,6 +225,7 @@ class PositionSlices:
             "legal_move_count_bucket": self.legal_move_count_bucket,
             "rating_band": self.rating_band,
             "speed": None if self.speed is None else str(self.speed),
+            "clock_pressure": self.clock_pressure,
         }
 
 
@@ -296,14 +308,26 @@ def legal_move_count_bucket(legal_move_count: int) -> str:
 
     if type(legal_move_count) is not int or legal_move_count < 1:
         raise ValueError("legal move count must be a positive integer")
-    for name, minimum, maximum in LEGAL_MOVE_COUNT_BUCKETS:
-        if legal_move_count >= minimum and (
-            maximum is None or legal_move_count < maximum
-        ):
+    return _bucket(legal_move_count, LEGAL_MOVE_COUNT_BUCKETS)
+
+
+def clock_pressure_bucket(clock_ms: int | None) -> str | None:
+    """Return the bucket for the mover's clock, or ``None`` when it is absent."""
+
+    if clock_ms is None:
+        return None
+    if type(clock_ms) is not int or clock_ms < 0:
+        raise ValueError("a clock must be a nonnegative integer")
+    return _bucket(clock_ms, CLOCK_PRESSURE_BUCKETS)
+
+
+def _bucket(value: int, buckets: Sequence[tuple[str, int, int | None]]) -> str:
+    """Return the name of the half-open interval holding ``value``."""
+
+    for name, minimum, maximum in buckets:
+        if value >= minimum and (maximum is None or value < maximum):
             return name
-    raise ValueError(
-        f"legal move count is outside configured buckets: {legal_move_count}"
-    )
+    raise ValueError(f"{value} is outside configured buckets")
 
 
 def rating_band_name(
@@ -776,6 +800,7 @@ def position_slices(
 
     Speed comes from the game's control rather than the clock left at the ply,
     so every decision in a blitz game counts toward blitz, endgame included.
+    Clock pressure is the other reading: the time the mover had left.
     """
 
     legal_moves = sum(
@@ -788,6 +813,7 @@ def position_slices(
         legal_move_count_bucket=legal_move_count_bucket(legal_moves),
         rating_band=rating_band_name(ply.target_rating, rating_bands),
         speed=speed_from_clock_ms(ply.time_initial_ms, ply.time_increment_ms),
+        clock_pressure=clock_pressure_bucket(ply.player_clock_ms),
     )
 
 

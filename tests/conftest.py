@@ -783,6 +783,7 @@ def write_training_run(
     manifest: Path,
     seed: int = 23,
     split: str = "train",
+    clock_inputs: bool = False,
 ) -> Path:
     """Write a retained run whose provenance names its training corpus.
 
@@ -792,7 +793,7 @@ def write_training_run(
 
     torch.manual_seed(seed)
     path.mkdir(parents=True, exist_ok=True)
-    config = tiny_model_config()
+    config = tiny_model_config(clock_inputs=clock_inputs)
     model = MoveModel(config)
     model_identity = model.identity()
     shard = normalized / "games.parquet"

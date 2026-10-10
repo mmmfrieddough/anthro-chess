@@ -24,7 +24,7 @@ from numpy.typing import NDArray
 from anthro_chess.evaluation.policy import PositionColumns, PositionPolicy
 from anthro_chess.evaluation.slices import PositionCharacteristic, PositionSlices
 
-SLICE_TABLE_VERSION = 2
+SLICE_TABLE_VERSION = 3
 
 #: Reported top-k human-move accuracies. Top-1 says how often the model would
 #: play the human move outright; the wider cutoffs say whether it was close.
@@ -38,6 +38,9 @@ UNRATED_SLICE = "unrated"
 #: is where a clockless game lands as well: the normalized columns record an
 #: unlimited control as an absent one.
 UNTIMED_SLICE = "untimed"
+
+#: Clock-pressure slice for positions whose mover's clock is unknown.
+UNCLOCKED_SLICE = "unclocked"
 
 #: Rule cases that can hold at a scored decision. Terminal, checkmate, and
 #: stalemate positions offer no move to predict, so they never appear here.
@@ -70,6 +73,7 @@ PHASE_DIMENSION = "phase"
 COLOR_DIMENSION = "color"
 RATING_DIMENSION = "rating_band"
 SPEED_DIMENSION = "speed"
+CLOCK_PRESSURE_DIMENSION = "clock_pressure"
 LEGAL_MOVE_COUNT_DIMENSION = "legal_move_count"
 RULE_CASE_DIMENSION = "rule_case"
 OPENING_FAMILY_DIMENSION = "opening_family"
@@ -80,6 +84,7 @@ SLICE_DIMENSIONS: tuple[str, ...] = (
     COLOR_DIMENSION,
     RATING_DIMENSION,
     SPEED_DIMENSION,
+    CLOCK_PRESSURE_DIMENSION,
     LEGAL_MOVE_COUNT_DIMENSION,
     RULE_CASE_DIMENSION,
     OPENING_FAMILY_DIMENSION,
@@ -315,6 +320,9 @@ def position_memberships(
                 UNTIMED_SLICE if item.speed is None else str(item.speed)
                 for item in slices
             ]
+        ),
+        CLOCK_PRESSURE_DIMENSION: _labelled(
+            [item.clock_pressure or UNCLOCKED_SLICE for item in slices]
         ),
         LEGAL_MOVE_COUNT_DIMENSION: _labelled(
             [item.legal_move_count_bucket for item in slices]

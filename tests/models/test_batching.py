@@ -119,6 +119,17 @@ def test_a_valid_batch_is_accepted(
             "target ratings must be nonnegative",
             id="negative-rating",
         ),
+        pytest.param(
+            lambda batch: _with_inputs(
+                batch,
+                opponent_clock_ms=OptionalTensor(
+                    values=torch.full_like(batch.inputs.opponent_clock_ms.values, -1),
+                    present=torch.ones_like(batch.inputs.opponent_clock_ms.present),
+                ),
+            ),
+            "time controls and clocks must be nonnegative",
+            id="negative-clock",
+        ),
     ],
 )
 def test_out_of_range_values_are_rejected_by_name(

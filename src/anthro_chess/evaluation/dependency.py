@@ -1,4 +1,4 @@
-"""Dependency tests for the rating conditioning input.
+"""Dependency tests for the rating conditioning input, and for the clock.
 
 Score the same held-out positions under true and corrupted conditioning, and
 see whether the prediction gets worse.
@@ -9,6 +9,10 @@ Three forms are computed, each answering more than the last:
   predict worse when the value is shuffled or removed. Absence probes an
   unseen input rather than reliance on the value, because the corpus rates
   every game and the rating-absent embedding is never trained.
+  The clock is corrupted only by absence, of the whole time context or of
+  the clock state alone, because those are the two contexts a clock-reading
+  model is served with when no live clock reaches it. A model that reads no
+  clock is not scored for either.
 - **cross-conditioning** shows direction. Scoring every rating slice under
   every conditioning value should put each slice's best result on the matching
   pair, which separates a model that reacts to the input from one that learned
@@ -46,6 +50,8 @@ from anthro_chess.evaluation.policy import (
     TrajectoryColumns,
 )
 from anthro_chess.evaluation.results.metrics import (
+    DEPENDENCY_CLOCK_ABSENT_DEGRADATION,
+    DEPENDENCY_CLOCK_STATE_ABSENT_DEGRADATION,
     DEPENDENCY_RATING_ABSENT_DEGRADATION,
     DEPENDENCY_RATING_ANCHOR_POLICY_DIVERGENCE,
     DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT,
@@ -58,12 +64,13 @@ from anthro_chess.evaluation.slices import (
     rating_band_name,
 )
 
+#: Version 4 adds the two clock-absence passes.
 #: Version 3 carries the cross-conditioning penalty and the pinned-rating curve,
 #: and drops the ``constant`` corruption entry.
 #: Version 2 reads ``maturity`` off the evaluated checkpoint. Version 1 records
 #: carry the position count their run finished on for every checkpoint in it, so
 #: the two are not comparable per position.
-DEPENDENCY_TEST_VERSION = 3
+DEPENDENCY_TEST_VERSION = 4
 
 #: Key identifying one scored position across conditioning passes.
 PositionKey = tuple[int, int]
@@ -85,6 +92,8 @@ class ConditioningKind(StrEnum):
     SHUFFLED = "shuffled"
     CONSTANT = "constant"
     ABSENT = "absent"
+    CLOCK_ABSENT = "clock_absent"
+    CLOCK_STATE_ABSENT = "clock_state_absent"
 
 
 #: ``TRUE`` has no entry: it is the baseline the others degrade from, and
@@ -94,6 +103,8 @@ class ConditioningKind(StrEnum):
 DEGRADATION_METRICS = {
     ConditioningKind.SHUFFLED: DEPENDENCY_RATING_SHUFFLED_DEGRADATION,
     ConditioningKind.ABSENT: DEPENDENCY_RATING_ABSENT_DEGRADATION,
+    ConditioningKind.CLOCK_ABSENT: DEPENDENCY_CLOCK_ABSENT_DEGRADATION,
+    ConditioningKind.CLOCK_STATE_ABSENT: DEPENDENCY_CLOCK_STATE_ABSENT_DEGRADATION,
 }
 
 

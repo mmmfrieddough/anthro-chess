@@ -41,11 +41,11 @@ config = "configs/evaluation/inference-efficiency.toml"
 config = "configs/evaluation/lichess-univ-2018-01-2021-06-checkpoint.toml"
 
 [benchmarks.dependency]
-# Whether the model reads its rating conditioning, which is a correctness
-# question rather than a quality one. It declares its own view because it pays
-# one forward pass per distinct conditioning where the reading above pays one in
-# total, and is sized on the narrowest quantity it reports rather than on that
-# cost; its own file carries the measurement.
+# Whether the model reads its rating conditioning and its clock, which is a
+# correctness question rather than a quality one. It declares its own view
+# because it pays one forward pass per distinct conditioning where the reading
+# above pays one in total, and is sized on the narrowest quantity it reports
+# rather than on that cost; its own file carries the measurement.
 config = "configs/evaluation/rating-dependency.toml"
 
 [benchmarks.novelty]

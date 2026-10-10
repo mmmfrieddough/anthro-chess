@@ -524,7 +524,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     dependency_parser = eval_commands.add_parser(
         "dependency",
-        help="Measure whether a checkpoint reads its rating conditioning.",
+        help="Measure whether a checkpoint reads its rating conditioning and clock.",
         parents=[_SET_FLAG, _STORE_FLAG, _DETAIL_ROOT_FLAG, _FORMAT_FLAG],
     )
     dependency_parser.add_argument(
@@ -2251,11 +2251,11 @@ def _render_dependency(result: DependencyBenchmarkResult) -> str:
         ),
         "",
         (
-            "Rating dependency (a degradation to interpret against training "
-            f"maturity, at step {dependency.maturity.step}):"
+            "Rating and clock dependency (a degradation to interpret against "
+            f"training maturity, at step {dependency.maturity.step}):"
         ),
         *(
-            f"  {item.conditioning.name:<10} degradation={item.degradation:+.6f}"
+            f"  {item.conditioning.name:<18} degradation={item.degradation:+.6f}"
             for item in dependency.corruptions
         ),
         f"  anchor policy divergence:      {dependency.anchor_divergence:.6f}",

@@ -70,186 +70,366 @@
     }
   },
   "horizon_steps": 69465,
-  "measured_at": "2026-09-02T03:35:24.887449Z",
+  "measured_at": "2026-10-10T03:51:44.567046Z",
   "metrics": {
     "adjudicated.mate_available_best_rank": {
       "": {
-        "bound": 0.008692599101957979,
+        "bound": 0.00870826623808016,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.0036641213345172817
+        "value": 0.0036707253763053295
       }
     },
     "adjudicated.mate_available_human_gap": {
       "": {
-        "bound": 0.003937248366751941,
+        "bound": 0.0039264520620435174,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.0016596366139397338
+        "value": 0.001655085734513214
+      }
+    },
+    "adjudicated.mate_available_human_gap_1200_to_1599": {
+      "": {
+        "bound": 0.0011530413071724438,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.0004860322216215637
+      }
+    },
+    "adjudicated.mate_available_human_gap_1600_to_1999": {
+      "": {
+        "bound": 0.005985018334447896,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.0025228166063459667
+      }
+    },
+    "adjudicated.mate_available_human_gap_2000_plus": {
+      "": {
+        "bound": 0.011402081141610444,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.004806227490631829
+      }
+    },
+    "adjudicated.mate_available_human_gap_under_1200": {
+      "": {
+        "bound": 0.003471347229577345,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.0014632490575283519
       }
     },
     "adjudicated.mate_available_policy_mass": {
       "": {
-        "bound": 0.003238973339464936,
+        "bound": 0.003241848979224768,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.0013652983619586152
+        "value": 0.001366510507241148
       }
     },
     "adjudicated.mate_available_selected_rate": {
       "": {
-        "bound": 0.003937248366751941,
+        "bound": 0.0039264520620435174,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.0016596366139397338
+        "value": 0.001655085734513214
       }
     },
     "adjudicated.mate_threatened_best_rank": {
       "": {
-        "bound": 0.012195499825392683,
+        "bound": 0.011403937180235073,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.005140670882343785
+        "value": 0.004807009851654399
       }
     },
     "adjudicated.mate_threatened_human_gap": {
       "": {
-        "bound": 0.003558053945827746,
+        "bound": 0.003429947190989686,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.00149979784174497
+        "value": 0.001445798032482838
+      }
+    },
+    "adjudicated.mate_threatened_human_gap_1200_to_1599": {
+      "": {
+        "bound": 0.004693822305527051,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.001978549136844561
+      }
+    },
+    "adjudicated.mate_threatened_human_gap_1600_to_1999": {
+      "": {
+        "bound": 0.0036274120724869166,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.0015290338146264038
+      }
+    },
+    "adjudicated.mate_threatened_human_gap_2000_plus": {
+      "": {
+        "bound": 0.005941725204569462,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.0025045676017657523
+      }
+    },
+    "adjudicated.mate_threatened_human_gap_under_1200": {
+      "": {
+        "bound": 0.004060565541819228,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.0017116175101914279
       }
     },
     "adjudicated.mate_threatened_policy_mass": {
       "": {
-        "bound": 0.002823288478697386,
+        "bound": 0.0027685072822370652,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.00119007806836068
+        "value": 0.0011669865915392731
       }
     },
     "adjudicated.mate_threatened_selected_rate": {
       "": {
-        "bound": 0.003558053945827746,
+        "bound": 0.003429947190989686,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.00149979784174497
+        "value": 0.001445798032482838
+      }
+    },
+    "adjudicated.material_concession_best_rank": {
+      "": {
+        "bound": 0.04931236535211616,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.020786244461854984
+      }
+    },
+    "adjudicated.material_concession_human_gap": {
+      "": {
+        "bound": 0.00024443367264949547,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.00010303415863590109
+      }
+    },
+    "adjudicated.material_concession_human_gap_1200_to_1599": {
+      "": {
+        "bound": 0.0002284321287246978,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 9.628915661839634e-05
+      }
+    },
+    "adjudicated.material_concession_human_gap_1600_to_1999": {
+      "": {
+        "bound": 0.0001762995237799363,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 7.431411926057835e-05
+      }
+    },
+    "adjudicated.material_concession_human_gap_2000_plus": {
+      "": {
+        "bound": 0.00030636107412172693,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.00012913791773765348
+      }
+    },
+    "adjudicated.material_concession_human_gap_under_1200": {
+      "": {
+        "bound": 0.0006612738334915301,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.00027874143657546273
+      }
+    },
+    "adjudicated.material_concession_policy_mass": {
+      "": {
+        "bound": 0.00015115181703638302,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 6.371380884565509e-05
+      }
+    },
+    "adjudicated.material_concession_selected_rate": {
+      "": {
+        "bound": 0.00024443367264949547,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.00010303415863590109
       }
     },
     "adjudicated.material_gain_best_rank": {
       "": {
-        "bound": 0.0039744253371667175,
+        "bound": 0.003947961088853175,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.001675307523048934
+        "value": 0.001664152261462584
       }
     },
     "adjudicated.material_gain_human_gap": {
       "": {
-        "bound": 0.0008330855021000944,
+        "bound": 0.0008321166879020463,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.00035116382636747004
+        "value": 0.0003507554499163518
+      }
+    },
+    "adjudicated.material_gain_human_gap_1200_to_1599": {
+      "": {
+        "bound": 0.0010764967944788654,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.0004537670292767799
+      }
+    },
+    "adjudicated.material_gain_human_gap_1600_to_1999": {
+      "": {
+        "bound": 0.0010081131378093342,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.0004249418168867715
+      }
+    },
+    "adjudicated.material_gain_human_gap_2000_plus": {
+      "": {
+        "bound": 0.0009051994714763395,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.00038156144744822456
+      }
+    },
+    "adjudicated.material_gain_human_gap_under_1200": {
+      "": {
+        "bound": 0.000665160334544741,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.0002803796820827801
       }
     },
     "adjudicated.material_gain_policy_mass": {
       "": {
-        "bound": 0.00047150886197498785,
+        "bound": 0.00046760618003783563,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.00019875133551107476
+        "value": 0.00019710626940598616
       }
     },
     "adjudicated.material_gain_selected_rate": {
       "": {
-        "bound": 0.0008330855021000944,
+        "bound": 0.0008321166879020463,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.00035116382636747004
-      }
-    },
-    "adjudicated.only_move_best_rank": {
-      "": {
-        "bound": 0.0017828444654165135,
-        "estimator": "seed-replicate-arms",
-        "source": "5 seed arms of one training configuration",
-        "units": null,
-        "value": 0.000751508077760916
-      }
-    },
-    "adjudicated.only_move_human_gap": {
-      "": {
-        "bound": 0.001782844465416548,
-        "estimator": "seed-replicate-arms",
-        "source": "5 seed arms of one training configuration",
-        "units": null,
-        "value": 0.0007515080777609305
-      }
-    },
-    "adjudicated.only_move_policy_mass": {
-      "": {
-        "bound": 0.001495061552241168,
-        "estimator": "seed-replicate-arms",
-        "source": "5 seed arms of one training configuration",
-        "units": null,
-        "value": 0.0006302012626752183
-      }
-    },
-    "adjudicated.only_move_selected_rate": {
-      "": {
-        "bound": 0.001782844465416548,
-        "estimator": "seed-replicate-arms",
-        "source": "5 seed arms of one training configuration",
-        "units": null,
-        "value": 0.0007515080777609305
+        "value": 0.0003507554499163518
       }
     },
     "adjudicated.stalemate_available_best_rank": {
       "": {
-        "bound": 0.21269153989046966,
+        "bound": 0.21250602760900247,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.08965415289984585
+        "value": 0.08957595540098895
       }
     },
     "adjudicated.stalemate_available_human_gap": {
       "": {
-        "bound": 0.0023395863600240248,
+        "bound": 0.002340196660365755,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.0009861870074945394
+        "value": 0.0009864442624854077
+      }
+    },
+    "adjudicated.stalemate_available_human_gap_1200_to_1599": {
+      "": {
+        "bound": 0.003110498291368801,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.001311143309003723
+      }
+    },
+    "adjudicated.stalemate_available_human_gap_1600_to_1999": {
+      "": {
+        "bound": 0.0028243204013307377,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.001190513046402585
+      }
+    },
+    "adjudicated.stalemate_available_human_gap_2000_plus": {
+      "": {
+        "bound": 0.004577656161773042,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.0019295825572651817
+      }
+    },
+    "adjudicated.stalemate_available_human_gap_under_1200": {
+      "": {
+        "bound": 0.010609741993492879,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.0044722391468996455
       }
     },
     "adjudicated.stalemate_available_policy_mass": {
       "": {
-        "bound": 0.0007945526129464912,
+        "bound": 0.0007915439544211244,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.00033492136774580133
+        "value": 0.0003336531521336732
       }
     },
     "adjudicated.stalemate_available_selected_rate": {
       "": {
-        "bound": 0.0023395863600240248,
+        "bound": 0.002340196660365755,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.0009861870074945394
+        "value": 0.0009864442624854077
       }
     },
     "decision.departure_policy_regret": {
@@ -3067,6 +3247,60 @@
         "value": 0.001073464470332904
       }
     },
+    "held_out.move_loss_blitz": {
+      "": {
+        "bound": 0.002327780366105194,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.0009812105219019363
+      }
+    },
+    "held_out.move_loss_bullet": {
+      "": {
+        "bound": 0.0017892342130667932,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.000754201496658182
+      }
+    },
+    "held_out.move_loss_classical": {
+      "": {
+        "bound": 0.0016141750550103765,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.000680410218777592
+      }
+    },
+    "held_out.move_loss_clock_10s_to_30s": {
+      "": {
+        "bound": 0.0024842640927217464,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.0010471718476774835
+      }
+    },
+    "held_out.move_loss_clock_30s_plus": {
+      "": {
+        "bound": 0.0019469773454679545,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.000820693689617419
+      }
+    },
+    "held_out.move_loss_clock_under_10s": {
+      "": {
+        "bound": 0.003319315083565694,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.001399164170695338
+      }
+    },
     "held_out.move_loss_endgame": {
       "": {
         "bound": 0.0024042577269285446,
@@ -3094,6 +3328,33 @@
         "value": 0.0001624036757285726
       }
     },
+    "held_out.move_loss_rapid": {
+      "": {
+        "bound": 0.0021506426517650364,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.0009065430869209302
+      }
+    },
+    "held_out.move_loss_ultrabullet": {
+      "": {
+        "bound": 0.0015601321047476631,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.0006576299289338717
+      }
+    },
+    "held_out.move_loss_unclocked": {
+      "": {
+        "bound": 0.0038177932036523917,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.001609283640508265
+      }
+    },
     "held_out.move_loss_under_1200": {
       "": {
         "bound": 0.001144289640007771,
@@ -3101,6 +3362,15 @@
         "source": "5 seed arms of one training configuration",
         "units": null,
         "value": 0.0004823432018019968
+      }
+    },
+    "held_out.move_loss_untimed": {
+      "": {
+        "bound": 0.0038177932036523917,
+        "estimator": "seed-replicate-arms",
+        "source": "5 seed arms of one training configuration",
+        "units": null,
+        "value": 0.001609283640508265
       }
     },
     "held_out.top1_accuracy": {
@@ -3132,125 +3402,125 @@
     },
     "inference.batch_throughput_per_second": {
       "92e3916673647857e98bb627a47a632e250568c24075c546460cdddaeb3cb862": {
-        "bound": 233.3588096130301,
+        "bound": 230.71438403030294,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 98.36586075942026
+        "value": 97.25117732796748
       },
       "bfd1723691b54ac4971bdf7cf315ceefd9c9dc21fd599e94efdd975f237bb0fb": {
-        "bound": 174.74403763503506,
+        "bound": 164.82291912350422,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 73.65844770570416
+        "value": 69.4764784725681
       }
     },
     "inference.decision_overhead_ms": {
       "92e3916673647857e98bb627a47a632e250568c24075c546460cdddaeb3cb862": {
-        "bound": 0.19929039038055307,
+        "bound": 0.20166077701807636,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.08400527421000949
+        "value": 0.08500444421057322
       },
       "bfd1723691b54ac4971bdf7cf315ceefd9c9dc21fd599e94efdd975f237bb0fb": {
-        "bound": 0.01823418487065124,
+        "bound": 0.017910272781444365,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.007686109185345521
+        "value": 0.007549573129483514
       }
     },
     "inference.first_decision_seconds": {
       "bfd1723691b54ac4971bdf7cf315ceefd9c9dc21fd599e94efdd975f237bb0fb": {
-        "bound": 0.13159118280480253,
+        "bound": 0.13609177142584433,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.05546857213751343
+        "value": 0.057365669034634865
       }
     },
     "inference.forward_throughput_per_second": {
       "183a9d9aa84c0c5b81f2f68becfb74d736f4f4ad3f8ae7224447a67fe730f8ac": {
-        "bound": 2829.6640996657425,
+        "bound": 2938.4956793102574,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 1192.7655325514177
+        "value": 1238.6404323561103
       }
     },
     "inference.model_load_seconds": {
       "bfd1723691b54ac4971bdf7cf315ceefd9c9dc21fd599e94efdd975f237bb0fb": {
-        "bound": 0.3317019917696843,
+        "bound": 0.3290463131612604,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.1398196707899956
+        "value": 0.13870024396119415
       }
     },
     "inference.move_latency_mean_ms": {
       "92e3916673647857e98bb627a47a632e250568c24075c546460cdddaeb3cb862": {
-        "bound": 1.1782563360694576,
+        "bound": 1.2268254576709676,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.4966609098019731
+        "value": 0.5171338607078502
       },
       "bfd1723691b54ac4971bdf7cf315ceefd9c9dc21fd599e94efdd975f237bb0fb": {
-        "bound": 1.256005643170676,
+        "bound": 1.2615970542942998,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.5294339494362686
+        "value": 0.5317908519630988
       }
     },
     "inference.move_latency_p50_ms": {
       "92e3916673647857e98bb627a47a632e250568c24075c546460cdddaeb3cb862": {
-        "bound": 1.280574474069642,
+        "bound": 1.3210276084985315,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.5397902509756749
+        "value": 0.5568421351325782
       },
       "bfd1723691b54ac4971bdf7cf315ceefd9c9dc21fd599e94efdd975f237bb0fb": {
-        "bound": 1.1987724031969182,
+        "bound": 1.2058384984721056,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.5053088824486335
+        "value": 0.5082873967164447
       }
     },
     "inference.move_latency_p90_ms": {
       "92e3916673647857e98bb627a47a632e250568c24075c546460cdddaeb3cb862": {
-        "bound": 2.317955726198621,
+        "bound": 2.341574335912824,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 0.9770692205186116
+        "value": 0.9870249829701384
       },
       "bfd1723691b54ac4971bdf7cf315ceefd9c9dc21fd599e94efdd975f237bb0fb": {
-        "bound": 2.390923546747398,
+        "bound": 2.39544773430267,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 1.0078267586116523
+        "value": 1.0097338029775769
       }
     },
     "inference.move_latency_p99_ms": {
       "92e3916673647857e98bb627a47a632e250568c24075c546460cdddaeb3cb862": {
-        "bound": 4.05410340745568,
+        "bound": 4.116313289843263,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 1.7088935787055437
+        "value": 1.7351164097139138
       },
       "bfd1723691b54ac4971bdf7cf315ceefd9c9dc21fd599e94efdd975f237bb0fb": {
-        "bound": 3.479893693264503,
+        "bound": 3.465169431853444,
         "estimator": "seed-replicate-arms",
         "source": "5 seed arms of one training configuration",
         "units": null,
-        "value": 1.4668515795776822
+        "value": 1.4606449801776111
       }
     },
     "ladder.ablated_temperature_strength_response": {
@@ -5057,182 +5327,362 @@
   "nondeterminism": {
     "adjudicated.mate_available_best_rank": {
       "": {
-        "bound": 0.037263145549661196,
+        "bound": 0.037646592809910014,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.0023366517934482623
+        "value": 0.0023606965356496186
       }
     },
     "adjudicated.mate_available_human_gap": {
       "": {
-        "bound": 0.003614151240603248,
+        "bound": 0.0034904125784027255,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.00022663177929769875
+        "value": 0.00021887252648410021
+      }
+    },
+    "adjudicated.mate_available_human_gap_1200_to_1599": {
+      "": {
+        "bound": 0.016770280519645527,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.001051610256590817
+      }
+    },
+    "adjudicated.mate_available_human_gap_1600_to_1999": {
+      "": {
+        "bound": 0.021187316242975183,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.0013285883348608928
+      }
+    },
+    "adjudicated.mate_available_human_gap_2000_plus": {
+      "": {
+        "bound": 0.002203282751560637,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.0001381607622482261
+      }
+    },
+    "adjudicated.mate_available_human_gap_under_1200": {
+      "": {
+        "bound": 0.015673641146000106,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.0009828435349038486
       }
     },
     "adjudicated.mate_available_policy_mass": {
       "": {
-        "bound": 0.0009182810148586055,
+        "bound": 0.0009618507996153725,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 5.758244368820764e-05
+        "value": 6.031456450598385e-05
       }
     },
     "adjudicated.mate_available_selected_rate": {
       "": {
-        "bound": 0.003614151240603248,
+        "bound": 0.0034904125784027255,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.00022663177929769875
+        "value": 0.00021887252648410021
       }
     },
     "adjudicated.mate_threatened_best_rank": {
       "": {
-        "bound": 0.02449239893309022,
+        "bound": 0.021751189246808706,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.0015358394211938964
+        "value": 0.0013639469941004545
       }
     },
     "adjudicated.mate_threatened_human_gap": {
       "": {
-        "bound": 0.0034666316114556157,
+        "bound": 0.00275439231412487,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.0002173812986704729
+        "value": 0.00017271906721032316
+      }
+    },
+    "adjudicated.mate_threatened_human_gap_1200_to_1599": {
+      "": {
+        "bound": 0.0034171602827805657,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.0002142791110486908
+      }
+    },
+    "adjudicated.mate_threatened_human_gap_1600_to_1999": {
+      "": {
+        "bound": 0.0012543736648545317,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 7.865773085984847e-05
+      }
+    },
+    "adjudicated.mate_threatened_human_gap_2000_plus": {
+      "": {
+        "bound": 0.0012149985047397655,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 7.618864143805334e-05
+      }
+    },
+    "adjudicated.mate_threatened_human_gap_under_1200": {
+      "": {
+        "bound": 0.015082416016355854,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.0009457697119847987
       }
     },
     "adjudicated.mate_threatened_policy_mass": {
       "": {
-        "bound": 0.00677097057409109,
+        "bound": 0.006654969431029084,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.00042458574824956523
+        "value": 0.00041731169033041703
       }
     },
     "adjudicated.mate_threatened_selected_rate": {
       "": {
-        "bound": 0.0034666316114556157,
+        "bound": 0.00275439231412487,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.0002173812986704729
+        "value": 0.00017271906721032316
+      }
+    },
+    "adjudicated.material_concession_best_rank": {
+      "": {
+        "bound": 0.05477948733292871,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.0034350451480290563
+      }
+    },
+    "adjudicated.material_concession_human_gap": {
+      "": {
+        "bound": 0.0007806312983708785,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 4.89508734824654e-05
+      }
+    },
+    "adjudicated.material_concession_human_gap_1200_to_1599": {
+      "": {
+        "bound": 0.00042207365399212084,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 2.64668788965648e-05
+      }
+    },
+    "adjudicated.material_concession_human_gap_1600_to_1999": {
+      "": {
+        "bound": 0.001020203282129942,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 6.397366066946023e-05
+      }
+    },
+    "adjudicated.material_concession_human_gap_2000_plus": {
+      "": {
+        "bound": 0.0002998693167784515,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 1.880383865920961e-05
+      }
+    },
+    "adjudicated.material_concession_human_gap_under_1200": {
+      "": {
+        "bound": 0.002932716874538645,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.00018390122582201098
+      }
+    },
+    "adjudicated.material_concession_policy_mass": {
+      "": {
+        "bound": 0.0005249669879955714,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 3.2918988343756106e-05
+      }
+    },
+    "adjudicated.material_concession_selected_rate": {
+      "": {
+        "bound": 0.0007806312983708785,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 4.89508734824654e-05
       }
     },
     "adjudicated.material_gain_best_rank": {
       "": {
-        "bound": 0.015646190470882865,
+        "bound": 0.015682464346743752,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.0009811221915148804
+        "value": 0.0009833968093936288
       }
     },
     "adjudicated.material_gain_human_gap": {
       "": {
-        "bound": 0.0036916212456399675,
+        "bound": 0.003571503940675581,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.00023148967370079598
+        "value": 0.00022395750453125689
+      }
+    },
+    "adjudicated.material_gain_human_gap_1200_to_1599": {
+      "": {
+        "bound": 0.005231738968807592,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.0003280654937738763
+      }
+    },
+    "adjudicated.material_gain_human_gap_1600_to_1999": {
+      "": {
+        "bound": 0.00977939681455394,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.0006132344644688068
+      }
+    },
+    "adjudicated.material_gain_human_gap_2000_plus": {
+      "": {
+        "bound": 0.00671882513639079,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.0004213158758669408
+      }
+    },
+    "adjudicated.material_gain_human_gap_under_1200": {
+      "": {
+        "bound": 0.004203270738181617,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.0002635735648143632
       }
     },
     "adjudicated.material_gain_policy_mass": {
       "": {
-        "bound": 0.0003790822937893644,
+        "bound": 0.0004423491478319291,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 2.377102921885383e-05
+        "value": 2.7738289786466654e-05
       }
     },
     "adjudicated.material_gain_selected_rate": {
       "": {
-        "bound": 0.0036916212456399675,
+        "bound": 0.003571503940675581,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.00023148967370079598
-      }
-    },
-    "adjudicated.only_move_best_rank": {
-      "": {
-        "bound": 0.008629878620988747,
-        "estimator": "seed-replicate-arms",
-        "source": "2 arms at seed 17",
-        "units": null,
-        "value": 0.0005411518823632299
-      }
-    },
-    "adjudicated.only_move_human_gap": {
-      "": {
-        "bound": 0.008629878620986244,
-        "estimator": "seed-replicate-arms",
-        "source": "2 arms at seed 17",
-        "units": null,
-        "value": 0.0005411518823630729
-      }
-    },
-    "adjudicated.only_move_policy_mass": {
-      "": {
-        "bound": 0.010447260208582235,
-        "estimator": "seed-replicate-arms",
-        "source": "2 arms at seed 17",
-        "units": null,
-        "value": 0.0006551140260145403
-      }
-    },
-    "adjudicated.only_move_selected_rate": {
-      "": {
-        "bound": 0.008629878620986244,
-        "estimator": "seed-replicate-arms",
-        "source": "2 arms at seed 17",
-        "units": null,
-        "value": 0.0005411518823630729
+        "value": 0.00022395750453125689
       }
     },
     "adjudicated.stalemate_available_best_rank": {
       "": {
-        "bound": 1.1944447140221013,
+        "bound": 1.1913244957892741,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.07489977944762947
+        "value": 0.07470412061576923
       }
     },
     "adjudicated.stalemate_available_human_gap": {
       "": {
-        "bound": 0.030388006675982984,
+        "bound": 0.030395933637421907,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.001905533986767765
+        "value": 0.0019060310609784802
+      }
+    },
+    "adjudicated.stalemate_available_human_gap_1200_to_1599": {
+      "": {
+        "bound": 0.031157451869645924,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.0019537834156662603
+      }
+    },
+    "adjudicated.stalemate_available_human_gap_1600_to_1999": {
+      "": {
+        "bound": 0.018852008049429256,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.0011821486825392405
+      }
+    },
+    "adjudicated.stalemate_available_human_gap_2000_plus": {
+      "": {
+        "bound": 0.007203066830079438,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.0004516811122239206
+      }
+    },
+    "adjudicated.stalemate_available_human_gap_under_1200": {
+      "": {
+        "bound": 0.07610247236421809,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.004772140835472592
       }
     },
     "adjudicated.stalemate_available_policy_mass": {
       "": {
-        "bound": 0.010977490341452827,
+        "bound": 0.010925531581572808,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.0006883630492152573
+        "value": 0.0006851048827972562
       }
     },
     "adjudicated.stalemate_available_selected_rate": {
       "": {
-        "bound": 0.030388006675982984,
+        "bound": 0.030395933637421907,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.001905533986767765
+        "value": 0.0019060310609784802
       }
     },
     "decision.departure_policy_regret": {
@@ -7973,6 +8423,60 @@
         "value": 6.461783984063518e-05
       }
     },
+    "held_out.move_loss_blitz": {
+      "": {
+        "bound": 0.0014606281503806002,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 9.159128508352346e-05
+      }
+    },
+    "held_out.move_loss_bullet": {
+      "": {
+        "bound": 0.004762230424944609,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.00029862412577141855
+      }
+    },
+    "held_out.move_loss_classical": {
+      "": {
+        "bound": 0.005236303415957414,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.0003283517155477337
+      }
+    },
+    "held_out.move_loss_clock_10s_to_30s": {
+      "": {
+        "bound": 0.003358085840602683,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.00021057474312092308
+      }
+    },
+    "held_out.move_loss_clock_30s_plus": {
+      "": {
+        "bound": 0.0005580266687450347,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 3.499205440338625e-05
+      }
+    },
+    "held_out.move_loss_clock_under_10s": {
+      "": {
+        "bound": 0.009615360179140456,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.0006029482555973815
+      }
+    },
     "held_out.move_loss_endgame": {
       "": {
         "bound": 0.005121082151998908,
@@ -8000,6 +8504,33 @@
         "value": 8.985664131926293e-05
       }
     },
+    "held_out.move_loss_rapid": {
+      "": {
+        "bound": 0.0017576641704313267,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.0001102174568339804
+      }
+    },
+    "held_out.move_loss_ultrabullet": {
+      "": {
+        "bound": 0.001447942813563008,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 9.079582848456784e-05
+      }
+    },
+    "held_out.move_loss_unclocked": {
+      "": {
+        "bound": 0.013293619865786819,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.0008336000689853904
+      }
+    },
     "held_out.move_loss_under_1200": {
       "": {
         "bound": 0.0015057429165704413,
@@ -8007,6 +8538,15 @@
         "source": "2 arms at seed 17",
         "units": null,
         "value": 9.442028670894984e-05
+      }
+    },
+    "held_out.move_loss_untimed": {
+      "": {
+        "bound": 0.013293619865786819,
+        "estimator": "seed-replicate-arms",
+        "source": "2 arms at seed 17",
+        "units": null,
+        "value": 0.0008336000689853904
       }
     },
     "held_out.top1_accuracy": {
@@ -8038,125 +8578,125 @@
     },
     "inference.batch_throughput_per_second": {
       "92e3916673647857e98bb627a47a632e250568c24075c546460cdddaeb3cb862": {
-        "bound": 270.05300647225556,
+        "bound": 325.400595359778,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 16.93415390975302
+        "value": 20.40482287581518
       },
       "bfd1723691b54ac4971bdf7cf315ceefd9c9dc21fd599e94efdd975f237bb0fb": {
-        "bound": 843.4477220194162,
+        "bound": 574.5409568050626,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 52.8898890113811
+        "value": 36.02761219765668
       }
     },
     "inference.decision_overhead_ms": {
       "92e3916673647857e98bb627a47a632e250568c24075c546460cdddaeb3cb862": {
-        "bound": 0.36895542338623133,
+        "bound": 0.41249686542373,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.02313600580522486
+        "value": 0.025866349342397604
       },
       "bfd1723691b54ac4971bdf7cf315ceefd9c9dc21fd599e94efdd975f237bb0fb": {
-        "bound": 0.10641389083256113,
+        "bound": 0.09878863212244178,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.006672872222510811
+        "value": 0.0061947168178158
       }
     },
     "inference.first_decision_seconds": {
       "bfd1723691b54ac4971bdf7cf315ceefd9c9dc21fd599e94efdd975f237bb0fb": {
-        "bound": 0.04774596696106445,
+        "bound": 0.06079015596013344,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.0029939957479114938
+        "value": 0.003811954810925426
       }
     },
     "inference.forward_throughput_per_second": {
       "183a9d9aa84c0c5b81f2f68becfb74d736f4f4ad3f8ae7224447a67fe730f8ac": {
-        "bound": 1749.8827346756539,
+        "bound": 3553.509317726622,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 109.72950806997004
+        "value": 222.82911970582467
       }
     },
     "inference.model_load_seconds": {
       "bfd1723691b54ac4971bdf7cf315ceefd9c9dc21fd599e94efdd975f237bb0fb": {
-        "bound": 0.007412021768814423,
+        "bound": 0.08958613881878585,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.0004647840031673132
+        "value": 0.005617658113699535
       }
     },
     "inference.move_latency_mean_ms": {
       "92e3916673647857e98bb627a47a632e250568c24075c546460cdddaeb3cb862": {
-        "bound": 4.878638837907088,
+        "bound": 1.0827655893215171,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.3059237222737787
+        "value": 0.06789674137413745
       },
       "bfd1723691b54ac4971bdf7cf315ceefd9c9dc21fd599e94efdd975f237bb0fb": {
-        "bound": 0.05912022769729294,
+        "bound": 0.08307156919734446,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.0037072389901663897
+        "value": 0.005209150443052203
       }
     },
     "inference.move_latency_p50_ms": {
       "92e3916673647857e98bb627a47a632e250568c24075c546460cdddaeb3cb862": {
-        "bound": 2.8285269143977163,
+        "bound": 1.2370166198042578,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.17736780912754146
+        "value": 0.0775693264901306
       },
       "bfd1723691b54ac4971bdf7cf315ceefd9c9dc21fd599e94efdd975f237bb0fb": {
-        "bound": 0.13068603884262772,
+        "bound": 0.04859391371151298,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.008194900417982877
+        "value": 0.0030471677564995396
       }
     },
     "inference.move_latency_p90_ms": {
       "92e3916673647857e98bb627a47a632e250568c24075c546460cdddaeb3cb862": {
-        "bound": 13.87390853572175,
+        "bound": 6.9834501511297775,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.869988101753963
+        "value": 0.4379096579043982
       },
       "bfd1723691b54ac4971bdf7cf315ceefd9c9dc21fd599e94efdd975f237bb0fb": {
-        "bound": 0.006791359461737615,
+        "bound": 0.1221920479930358,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.000425864269699725
+        "value": 0.007662269619925826
       }
     },
     "inference.move_latency_p99_ms": {
       "92e3916673647857e98bb627a47a632e250568c24075c546460cdddaeb3cb862": {
-        "bound": 32.374882171183074,
+        "bound": 25.653924075625504,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 2.03012454724609
+        "value": 1.6086749203823163
       },
       "bfd1723691b54ac4971bdf7cf315ceefd9c9dc21fd599e94efdd975f237bb0fb": {
-        "bound": 1.0954612639844281,
+        "bound": 0.7197768909893335,
         "estimator": "seed-replicate-arms",
         "source": "2 arms at seed 17",
         "units": null,
-        "value": 0.0686928462260639
+        "value": 0.04513488967192498
       }
     },
     "ladder.ablated_temperature_strength_response": {
@@ -9869,68 +10409,128 @@
       }
     }
   },
-  "notes": "Six arms of the ablation vehicle at its own digest and horizon, relaxed determinism, data draw held. Five distinct initialization seeds carry the spread; a second arm at seed 17 carries the nondeterminism term. Scored through the full checkpoint suite at its declared sizes, two arms at a time on a two-card host.",
-  "scoring_seconds": 12014.931057757698,
+  "notes": "Six arms of the ablation vehicle at its own digest and horizon, relaxed determinism, data draw held. Five distinct initialization seeds carry the spread; a second arm at seed 17 carries the nondeterminism term. Scored through the full checkpoint suite at its declared sizes, two arms at a time on a two-card host; held-out prediction, rating dependency and game termination rescored for #497, which added the per-speed and clock-pressure series and the clock-absence passes.",
+  "scoring_seconds": 20710.0845411119,
   "series": {
     "adjudicated.mate_available_best_rank": {
-      "": "6aa75c4db238264e48da235bf94129cfbeb9474e2a8b1c07f5aa5aacbbfd0e12"
+      "": "4b2404d270179351ff26dac39bb330fc5824251e62e932d5b320af6c5f8628aa"
     },
     "adjudicated.mate_available_human_gap": {
-      "": "94688d42760e38eba966246b7df6fa9182bc6d1eb9d45e25471f67609952ef88"
+      "": "72dd7d1327d23fe9a69a70306e3a5f53c4145de9e54cb61ac952a469bf6740b6"
+    },
+    "adjudicated.mate_available_human_gap_1200_to_1599": {
+      "": "e9b3933642ec5831a35e6c3d8c689e6ab0b0293d768dfa47ef40d9163505d2d0"
+    },
+    "adjudicated.mate_available_human_gap_1600_to_1999": {
+      "": "06f8ef125e2e7e00534f49c9d82a8b0c9d535fe7b7ef87081d58f49f034b583f"
+    },
+    "adjudicated.mate_available_human_gap_2000_plus": {
+      "": "383e7fca144e32798623c7c92be9f5453f153d9b585348244390a33e765468d5"
+    },
+    "adjudicated.mate_available_human_gap_under_1200": {
+      "": "3d5a0d46a61e5a9282264f1e7c7b0050861a711c96b10ac340a69bff4fc89558"
     },
     "adjudicated.mate_available_policy_mass": {
-      "": "335e6d4f321dc6b6b808b7b7ecbd0e7995ae160e5d3e04d2f1a34b2d130c500d"
+      "": "ded76e39a82e94c09e020151834545f3e8720f643d84d2d0100ada0ebaaf87e4"
     },
     "adjudicated.mate_available_selected_rate": {
-      "": "6ec37d82dced56ef35381303c40004145e61ab4f0a58e5ea63cd07657f5b8322"
+      "": "ee8f42746d93a2ae5f33ffe59102daa96ffbf961f73073ea559493e1472ccbc0"
     },
     "adjudicated.mate_threatened_best_rank": {
-      "": "4e46ba6090556604a2c7974942be1e146c5fac6df58016f28bdcdf4f8cc47233"
+      "": "e90327072fd980f7ab2c261cc522ee0867b27d11b1d55c921e153869a3f91de4"
     },
     "adjudicated.mate_threatened_human_gap": {
-      "": "f569ac498a8da4fd5df48f511d0151625ef67931bd3dd86f9493dc4e14a1faa4"
+      "": "da22a89a7392af18171c09c13803bbf0221269edd1b502637ba16f10361bd0e7"
+    },
+    "adjudicated.mate_threatened_human_gap_1200_to_1599": {
+      "": "81b19fd7d747ab6f475cc4478e1d3d6de84d28ff5faccbba829a40fd9cbbfed3"
+    },
+    "adjudicated.mate_threatened_human_gap_1600_to_1999": {
+      "": "8bfb1d15b679dece3aee711691faa30d12c3aad69ca380ddc7eafe5d4298a21a"
+    },
+    "adjudicated.mate_threatened_human_gap_2000_plus": {
+      "": "d9c4c1d9c4b5b105966cd5e8ac7194c2723ad11f323e388519a69ce58c39c654"
+    },
+    "adjudicated.mate_threatened_human_gap_under_1200": {
+      "": "47d8787f80f2805a16ae3a452e6355b5217e5739d12d81d6dd296f2adbbda501"
     },
     "adjudicated.mate_threatened_policy_mass": {
-      "": "d2b4dc00c3f80102b007c3a8f71eac61ed76654aff9708e55855750cd8307e48"
+      "": "88cdb6631ead559c2b0a58b7885428433ffc8abe0035b0723cbd0a198e1a62f2"
     },
     "adjudicated.mate_threatened_selected_rate": {
-      "": "9ec65a30c5f6ce124216378e856513c343f45e574cda9e38f3c0ac9dcad1f4dc"
+      "": "143edad03c2c27efa78719a157e9a1cb1eaead276d0a9e516638706407d5a65b"
+    },
+    "adjudicated.material_concession_best_rank": {
+      "": "45b7d4e58a99544d1c066d29e5fb51ef7b89f143e172208c76ff6797a4c0093c"
+    },
+    "adjudicated.material_concession_human_gap": {
+      "": "5fe468eefbe79ad261f1a80adb39d4cd9417d0b6d16749354a93d99c8fda0a74"
+    },
+    "adjudicated.material_concession_human_gap_1200_to_1599": {
+      "": "a867560f8fee820d810d895f13a32edc5560e25aa227c533c3aa5f291940ac2a"
+    },
+    "adjudicated.material_concession_human_gap_1600_to_1999": {
+      "": "c5f9ee74da7da18628258e73cfc0254e14a80002befe97ccae7d35b79a7f67cd"
+    },
+    "adjudicated.material_concession_human_gap_2000_plus": {
+      "": "821c6b5adf1798c576b00df305962ed331b9c759806dd10822ab7da76a748a09"
+    },
+    "adjudicated.material_concession_human_gap_under_1200": {
+      "": "9aec5b7b9a193e9a6f93e13ba240b85261c6513c57ef16041b2b939df2b7a034"
+    },
+    "adjudicated.material_concession_policy_mass": {
+      "": "7259938671af4148c1440dce0cec92ae2e9aa19959b74895b83a94d6da9b9391"
+    },
+    "adjudicated.material_concession_selected_rate": {
+      "": "ae26843faeb3b9d8e9097b0e2f8bdd87dc290f48c88e25d939f513a3378d03dd"
     },
     "adjudicated.material_gain_best_rank": {
-      "": "1afdcb3789753be262f8834fb4322b5df4637faa719d98c0d5ee7d7adcb00d59"
+      "": "bb838d454276c08be6784b88f8cb7caf579da6d318e8a7a636dc52573cf78d52"
     },
     "adjudicated.material_gain_human_gap": {
-      "": "6108762302b5fe0d9641ee5ee362394472db6a141203cb1efefc1f7914ba9437"
+      "": "22459697b64a1e44c7bb6f69721428e481998dc918684a01ceedc4efa25da5b7"
+    },
+    "adjudicated.material_gain_human_gap_1200_to_1599": {
+      "": "bc38ad445be82059527cd9d041252f6f086dc55c37c471f8a306ea9411fe5e2f"
+    },
+    "adjudicated.material_gain_human_gap_1600_to_1999": {
+      "": "8979645c31d3ebea2619bd954469fabf05e2e25f265b8440bdf729f0239575bc"
+    },
+    "adjudicated.material_gain_human_gap_2000_plus": {
+      "": "ecd5b205922082e675312cd950e61725559b4cdf65726821a0dbb0e453e62c0e"
+    },
+    "adjudicated.material_gain_human_gap_under_1200": {
+      "": "83594d4da38e1a6ad48b1f3c10895511c8f9d4b392ee6dc8ff05bb4b9202cfe2"
     },
     "adjudicated.material_gain_policy_mass": {
-      "": "3535a4898368ba116527a9e4f23fd64a86ab1a0fb6f89c5724ec1affbd4117e7"
+      "": "01b648ec312667fd77a752906dc2fa56d75f4a5d188969408bdc68609aca03bf"
     },
     "adjudicated.material_gain_selected_rate": {
-      "": "7b92278fafcf67c15aa5799523f6c0f108436f4d6a619d9cb88ae0c90bf39a6f"
-    },
-    "adjudicated.only_move_best_rank": {
-      "": "6c3d30be54b1e4367837ebeef46c4a8d49ffcc8cf1e4702251a00cab3e7be60e"
-    },
-    "adjudicated.only_move_human_gap": {
-      "": "b61692c07fb386edc5fde0b798944c758229f43babece1d79a671b8930aac446"
-    },
-    "adjudicated.only_move_policy_mass": {
-      "": "7481a33f54c993e6187270f0e7248415a36e0fa3c47beb56fd128e12540841bd"
-    },
-    "adjudicated.only_move_selected_rate": {
-      "": "95bee9c439bf94dc4c7e3330117a08c192edf64d8bdb27541ab2feff33b672ce"
+      "": "62f5370cf8486fccce703415515577b2d885917107c7df8d1c2057407a6f2e2c"
     },
     "adjudicated.stalemate_available_best_rank": {
-      "": "919541e0a2d3cbdee1060b95140b13408c74c9e443d9250f4bf16715b6cebff6"
+      "": "c7eae111457996714ed0cb3f2ac8f9a1a936d9aa0e141eff718b9470b332d299"
     },
     "adjudicated.stalemate_available_human_gap": {
-      "": "d73644f3df4f394c508fabeecc487efd5b8011e6db51296b672de5ef70e16222"
+      "": "11129987e784febff645fae8dc4df9d69cfb25f6b7e65cce318f51bbbeb54832"
+    },
+    "adjudicated.stalemate_available_human_gap_1200_to_1599": {
+      "": "523ed38a005759fe3dcf74272bb2defacd0c3b1dde405eef3e00ec388b1d612e"
+    },
+    "adjudicated.stalemate_available_human_gap_1600_to_1999": {
+      "": "11377eafc02c5b5fd3f70f431dcfa6176d1f48f682de8b5e20f776b1b6cb717a"
+    },
+    "adjudicated.stalemate_available_human_gap_2000_plus": {
+      "": "654e83979bedfee6cce83a3331dd33c43da309e93b5bbda4153ccac9b1f0c38e"
+    },
+    "adjudicated.stalemate_available_human_gap_under_1200": {
+      "": "2a975aca344373af692c42f843ca2cf1f7630ff114179583d98b30a3aeab8825"
     },
     "adjudicated.stalemate_available_policy_mass": {
-      "": "65bee8e4257e971ee9f0944f82ea9f054435246197d1c416f42ec1f5af758267"
+      "": "de8f1162b369345ceb7e86e4c0390376f572be69b9bade0cfdf3c90f63866b45"
     },
     "adjudicated.stalemate_available_selected_rate": {
-      "": "6fa5efed1d2c614a57ea1349fcb737e73d3ec435af6f700794271e1f61f67657"
+      "": "0e0856dcdbc2474730efdaf9926fdc02ca745b89398d7d50a9350075321eef8c"
     },
     "decision.departure_policy_regret": {
       "04410a3ee10bfa740fd4c910d10e7399925e3ddd09c4043d373ec89bf9ab659c": "a1ce50bb39fc3510d891fb800c3ec1002964a128e6f4da51232fd41e4372fe35",
@@ -10461,6 +11061,24 @@
     "held_out.move_loss_2000_plus": {
       "": "32b876715e1d34741ec41e2111f6db614e02f7f0c3e9e0e6e226db5668d89e23"
     },
+    "held_out.move_loss_blitz": {
+      "": "40434ae5f2ba85690f21d09896c4331684b95378161d6f8c605cf5febd16774b"
+    },
+    "held_out.move_loss_bullet": {
+      "": "3747023e674fd7b493756c8dc330d1eb2595e8298b58def6d5177c4044e4c97a"
+    },
+    "held_out.move_loss_classical": {
+      "": "dd3db4fb8d730b10fb8afe76d04067d39fa5bbc4d43a02426b4deb0b3e80d161"
+    },
+    "held_out.move_loss_clock_10s_to_30s": {
+      "": "510c3d448e8a98853780e6bfe666f7f874963679f3e75a3065d32bac49be0474"
+    },
+    "held_out.move_loss_clock_30s_plus": {
+      "": "ae1fbeb78b9bfcb6e23f9715f38a32ba9f6e9c696967c868aa43d48b781c130b"
+    },
+    "held_out.move_loss_clock_under_10s": {
+      "": "5089d184c030e0cc3a58adfd5bc9918d7f08b6655416383fa492838c379df077"
+    },
     "held_out.move_loss_endgame": {
       "": "f7f2707ea09c0fc2bb9e701af1572e2a58f8afd9769e6d84f3e0b59db2f1b0cb"
     },
@@ -10470,8 +11088,20 @@
     "held_out.move_loss_opening": {
       "": "ee2a96a4f9f07964c1b111361320de6b21edcaa6644da444cb4c24cfe7531a74"
     },
+    "held_out.move_loss_rapid": {
+      "": "06b9e27afa8b709f9efb3c85100fb3fb4f6b512999f624325abb09011d5e8b9c"
+    },
+    "held_out.move_loss_ultrabullet": {
+      "": "385ede466e0ed9d31cf73795a90dd1616e1d29df2c814927765b61f561148823"
+    },
+    "held_out.move_loss_unclocked": {
+      "": "fc1ff871309666edaa4b171073b917073047f897b6c66740105466d28cf0c3c6"
+    },
     "held_out.move_loss_under_1200": {
       "": "f958a57329d30a96761e3377f5c40d34446a76f0ef6d06737c25164ffc0cb638"
+    },
+    "held_out.move_loss_untimed": {
+      "": "f82c2af83fce7da47de0069f6b9ccb636798c1aa33898e51af1ddcb5f6a81d91"
     },
     "held_out.top1_accuracy": {
       "": "8c2d010d71e73af7a06868abe48fd364d720d3d150303e140f8b19e05b3b3c5f"

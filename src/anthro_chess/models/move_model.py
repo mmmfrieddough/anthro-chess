@@ -53,6 +53,12 @@ _PROMOTION_CHOICE_COUNT = 4
 #: carries.
 _WEAK_RATING_ANCHOR = 0.0
 _STRONG_RATING_ANCHOR = 5000.0
+#: The initial clock, the increment, both players' clocks, and the time each
+#: player spent on their last move.
+_CLOCK_FEATURE_COUNT = 6
+#: Fields a model reading no clock leaves out of its identity, so that it is
+#: still the identity every run recorded before they existed.
+_CLOCK_CONFIG_FIELDS = ("clock_inputs", "clock_dropout")
 
 
 class RatingEmbedding(nn.Module):
@@ -86,6 +92,82 @@ class RatingEmbedding(nn.Module):
         )
         placed = weakness * self.weak + (1.0 - weakness) * self.strong
         return torch.where(rating.present.unsqueeze(-1), placed, self.unrated)
+
+
+class ClockEmbedding(nn.Module):
+    """Read one decision's time context into a vector added to every square.
+
+    Everything is in the mover's frame. Each time is read as the log of its
+    seconds beside a flag saying it is present, so a missing value is a
+    declared absence rather than a zero clock.
+
+    The last move times are differences of the clocks around them, and the
+    recorded clock already includes the increment the move earned. The
+    opponent's clock before their move is the side-to-move clock one ply back;
+    the mover's is two plies back. A difference reaching before the decision's
+    own game is absent.
+    """
+
+    def __init__(self, config: MoveModelConfig) -> None:
+        super().__init__()
+        self.dropout = config.clock_dropout
+        self.projection = nn.Sequential(
+            nn.Linear(2 * _CLOCK_FEATURE_COUNT, config.model_dim),
+            nn.GELU(),
+            nn.Linear(config.model_dim, config.model_dim),
+        )
+
+    def forward(self, batch: MoveModelBatch, decisions: Tensor) -> Tensor:
+        """Return one embedding per decision, shaped batch by decision by width."""
+
+        inputs = batch.inputs
+        floor = _at_decision(batch.history_floor, decisions)
+        initial = _at_decision_optional(inputs.time_initial_ms, decisions)
+        increment = _at_decision_optional(inputs.time_increment_ms, decisions)
+        player = _at_decision_optional(inputs.player_clock_ms, decisions)
+        opponent = _at_decision_optional(inputs.opponent_clock_ms, decisions)
+        opponent_spent = _spent(
+            _at_decision_optional(inputs.player_clock_ms, (decisions - 1).clamp(min=0)),
+            opponent,
+            increment,
+            decisions - 1 >= floor,
+        )
+        player_spent = _spent(
+            _at_decision_optional(inputs.player_clock_ms, (decisions - 2).clamp(min=0)),
+            player,
+            increment,
+            decisions - 2 >= floor,
+        )
+        fields = (initial, increment, player, opponent, player_spent, opponent_spent)
+        present = torch.stack([field.present for field in fields], dim=-1)
+        if self.training and self.dropout > 0.0:
+            present = present & self._kept(decisions)
+        seconds = torch.stack([field.values for field in fields], dim=-1).float()
+        # Lag compensation can return more than a move took, so a spent time
+        # can come out slightly negative.
+        seconds = torch.log1p(seconds.clamp(min=0.0) / 1000.0)
+        presence = present.to(seconds.dtype)
+        return cast(
+            Tensor,
+            self.projection(torch.cat((seconds * presence, presence), dim=-1)),
+        )
+
+    def _kept(self, decisions: Tensor) -> Tensor:
+        """Return which fields survive this step's dropout, per decision.
+
+        Three absences are drawn independently, one for each partial context a
+        decision can be served with: no time at all, a declared control with no
+        clock, and clocks without the initial one, which a protocol joining a
+        game partway through never learns.
+        """
+
+        untimed, unclocked, no_initial = (
+            torch.rand((3, *decisions.shape, 1), device=decisions.device) < self.dropout
+        ).unbind(0)
+        field = torch.arange(_CLOCK_FEATURE_COUNT, device=decisions.device)
+        # Fields in the order ``forward`` stacks them: the initial clock and the
+        # increment, then the four that make up the clock state.
+        return ~(untimed | (unclocked & (field >= 2)) | (no_initial & (field == 0)))
 
 
 class SquareTokenEncoder(nn.Module):
@@ -137,6 +219,7 @@ class SquareTokenEncoder(nn.Module):
         self.position_projection = nn.Linear(position_dim, config.model_dim)
         self.normalization = nn.LayerNorm(config.model_dim)
         self.rating_embedding = RatingEmbedding(config)
+        self.clock_embedding = ClockEmbedding(config) if config.clock_inputs else None
         # Derived constants, not state: pure functions of the encoding, so they
         # do not belong in a checkpoint.
         for name, values in (
@@ -211,8 +294,10 @@ class SquareTokenEncoder(nn.Module):
         )
         tokens = tokens + self.position_projection(position).unsqueeze(-2)
         tokens = tokens + self.square_identity
-        rating = _at_decision_rating(inputs.target_rating, decisions)
+        rating = _at_decision_optional(inputs.target_rating, decisions)
         tokens = tokens + self.rating_embedding(rating).unsqueeze(-2)
+        if self.clock_embedding is not None:
+            tokens = tokens + self.clock_embedding(batch, decisions).unsqueeze(-2)
         return cast(Tensor, self.normalization(tokens))
 
     def _history_index(self, decisions: Tensor, floor: Tensor) -> Tensor:
@@ -539,7 +624,10 @@ def model_identity(config: MoveModelConfig) -> dict[str, object]:
         # pass, history stacked into the square tokens, and the board flipped to
         # the side to move. No version 6 checkpoint can be read.
         "version": 7,
-        "config": config.model_dump(mode="json"),
+        "config": config.model_dump(
+            mode="json",
+            exclude=None if config.clock_inputs else set(_CLOCK_CONFIG_FIELDS),
+        ),
         "action_vocabulary": action_vocabulary_identity(),
         "encoding": encoding_identity(),
         "rating_conditioning": "square-token-input-embedding",
@@ -548,7 +636,7 @@ def model_identity(config: MoveModelConfig) -> dict[str, object]:
         # itself. Carrying them here is what makes the runner's identity check
         # refuse such a checkpoint instead of serving it under new endpoints.
         "rating_anchors": [_WEAK_RATING_ANCHOR, _STRONG_RATING_ANCHOR],
-        "timing_inputs": False,
+        "timing_inputs": config.clock_inputs,
         "timing_head": False,
     }
 
@@ -559,12 +647,26 @@ def _at_decision(values: Tensor, decisions: Tensor) -> Tensor:
     return values.gather(1, decisions)
 
 
-def _at_decision_rating(rating: OptionalTensor, decisions: Tensor) -> OptionalTensor:
-    """Return the nullable rating each decision's own mover carries."""
+def _at_decision_optional(values: OptionalTensor, decisions: Tensor) -> OptionalTensor:
+    """Return one nullable per-ply column read at each decision."""
 
     return OptionalTensor(
-        _at_decision(rating.values, decisions),
-        _at_decision(rating.present, decisions),
+        _at_decision(values.values, decisions),
+        _at_decision(values.present, decisions),
+    )
+
+
+def _spent(
+    before: OptionalTensor,
+    after: OptionalTensor,
+    increment: OptionalTensor,
+    same_game: Tensor,
+) -> OptionalTensor:
+    """Return the time a move took from the clocks either side of it."""
+
+    return OptionalTensor(
+        before.values + increment.values - after.values,
+        before.present & after.present & increment.present & same_game,
     )
 
 

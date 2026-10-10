@@ -433,10 +433,7 @@ def _validate_artifact_contract(
         raise ModelRunnerError("checkpoint parameter precision is unsupported")
     if expected_model.get("rating_conditioning") != "square-token-input-embedding":
         raise ModelRunnerError("checkpoint uses an unsupported rating context contract")
-    if (
-        expected_model.get("timing_inputs") is not False
-        or expected_model.get("timing_head") is not False
-    ):
+    if expected_model.get("timing_head") is not False:
         raise ModelRunnerError("checkpoint timing output is unsupported")
     # The run record is gated through the same function the machine report
     # reads, against the identity this checkpoint rebuilds to — so the report

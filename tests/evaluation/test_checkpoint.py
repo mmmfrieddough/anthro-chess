@@ -512,6 +512,31 @@ def test_dependency_tests_report_degradation_without_a_verdict(
     assert "dependency.rating_cross_conditioning_penalty" in measurements
 
 
+def test_only_a_model_that_reads_the_clock_is_scored_without_one(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest, clock_inputs=True
+    )
+
+    result = _measure_dependency(_dependency_config(pool, checkpoint))
+
+    for kind in (ConditioningKind.CLOCK_ABSENT, ConditioningKind.CLOCK_STATE_ABSENT):
+        assert result.dependency.corruption(kind) is not None
+    measurements = {
+        item.metric
+        for envelope in result.envelopes
+        if envelope.kind == DEPENDENCY_KIND
+        for item in envelope.measurements
+    }
+    assert "dependency.clock_absent_degradation" in measurements
+    assert "dependency.clock_state_absent_degradation" in measurements
+
+
 def test_the_dependency_reading_carries_a_spread_for_what_it_can_resample(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],

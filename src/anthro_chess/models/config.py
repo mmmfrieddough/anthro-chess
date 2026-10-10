@@ -36,6 +36,13 @@ class MoveModelConfig(ConfigModel):
     #: what keeps depth from multiplying it.
     geometric_bias_dim: int = Field(default=16, ge=1)
     dropout: float = Field(default=0.0, ge=0.0, lt=1.0)
+    #: Whether a decision reads the game's time control and both clocks.
+    clock_inputs: bool = False
+    #: How often a training decision is shown each partial time context it can
+    #: be served with: none at all, a control without a clock, or clocks
+    #: without the initial one. The corpus presents almost none of these on its
+    #: own.
+    clock_dropout: float = Field(default=0.05, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def validate_attention_shape(self) -> MoveModelConfig:
