@@ -120,10 +120,11 @@ games are read as absent, and so is a game whose clock was not supplied. The
 untimed slice reads 0.004 worse, inside its floor, on 24,776 decisions.
 
 **The held-out projection does not cover the time columns.** A series sliced by
-speed or clock depends on them, but the move-prediction projection digests
-moves and ratings only. While the pool is frozen nothing can move them, and
-adding them would have broken every held-out series and the seed floor stored
-against them.
+speed or clock, and the clock-absence degradations, depend on them, but they
+declare the move-prediction projection, which digests moves and ratings only. A
+projection covering the time columns would need a held-out pass, its bootstrap,
+and its dependency reading to carry a second data component, and while the pool
+is frozen nothing can move those columns under an unchanged fingerprint.
 
 ## Consequences
 
