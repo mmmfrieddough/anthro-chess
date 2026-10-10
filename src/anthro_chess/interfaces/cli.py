@@ -524,7 +524,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     dependency_parser = eval_commands.add_parser(
         "dependency",
-        help="Measure whether a checkpoint reads its rating conditioning.",
+        help="Measure whether a checkpoint reads its rating conditioning and clock.",
         parents=[_SET_FLAG, _STORE_FLAG, _DETAIL_ROOT_FLAG, _FORMAT_FLAG],
     )
     dependency_parser.add_argument(

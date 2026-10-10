@@ -40,7 +40,11 @@ class OptionalTensor:
 
 @dataclass(frozen=True, eq=False)
 class MoveModelInputs:
-    """Tensorized exact state and context shaped batch by sequence."""
+    """Tensorized exact state and context shaped batch by sequence.
+
+    The four time inputs are each ply's pre-move view: the game's control, and
+    the clock the side to move and its opponent hold before the move is made.
+    """
 
     piece_ids: Tensor
     side_to_move: Tensor
@@ -50,6 +54,10 @@ class MoveModelInputs:
     fullmove_number: Tensor
     repetition_count: Tensor
     target_rating: OptionalTensor
+    time_initial_ms: OptionalTensor
+    time_increment_ms: OptionalTensor
+    player_clock_ms: OptionalTensor
+    opponent_clock_ms: OptionalTensor
 
 
 @dataclass(frozen=True, eq=False)
@@ -142,6 +150,22 @@ class MoveModelBatch:
                     inputs.target_rating.values,
                     inputs.target_rating.present,
                 ),
+                time_initial_ms=optional(
+                    inputs.time_initial_ms.values,
+                    inputs.time_initial_ms.present,
+                ),
+                time_increment_ms=optional(
+                    inputs.time_increment_ms.values,
+                    inputs.time_increment_ms.present,
+                ),
+                player_clock_ms=optional(
+                    inputs.player_clock_ms.values,
+                    inputs.player_clock_ms.present,
+                ),
+                opponent_clock_ms=optional(
+                    inputs.opponent_clock_ms.values,
+                    inputs.opponent_clock_ms.present,
+                ),
             ),
             action_targets=required(batch.action_targets),
             action_loss_mask=boolean(batch.action_loss_mask),
@@ -233,6 +257,14 @@ class MoveModelBatch:
         def column(name: DecisionColumn) -> Tensor:
             return crossed[name]
 
+        # A live history carries no clock, so every served decision presents
+        # the time context as absent.
+        def absent() -> OptionalTensor:
+            return OptionalTensor(
+                torch.zeros((count, width), dtype=torch.long, device=tensor_device),
+                torch.zeros((count, width), dtype=torch.bool, device=tensor_device),
+            )
+
         result = cls(
             inputs=MoveModelInputs(
                 piece_ids=transferred(boards).to(torch.long),
@@ -246,6 +278,10 @@ class MoveModelBatch:
                     transferred(ratings),
                     transferred(rated),
                 ),
+                time_initial_ms=absent(),
+                time_increment_ms=absent(),
+                player_clock_ms=absent(),
+                opponent_clock_ms=absent(),
             ),
             action_targets=torch.zeros(
                 (count, width), dtype=torch.long, device=tensor_device
@@ -336,8 +372,11 @@ def _reject_invalid_batch(batch: _Batch) -> None:
     )
     if any(value.shape != expected_shape for value in aligned):
         raise ValueError("model inputs, targets, and masks must align")
-    rating = batch.inputs.target_rating
-    if rating.values.shape != expected_shape or rating.present.shape != expected_shape:
+    nullable = (batch.inputs.target_rating, *_time_context(batch))
+    if any(
+        value.values.shape != expected_shape or value.present.shape != expected_shape
+        for value in nullable
+    ):
         raise ValueError("nullable model inputs must align with targets")
     _reject_invalid_values(batch)
     legal_action_ids = batch.legal_action_ids
@@ -415,11 +454,30 @@ def _reject_invalid_values(batch: _Batch) -> None:
             "target ratings must be nonnegative",
             (ratings.present & (ratings.values < 0)).any(),
         ),
+        *(
+            (
+                "time controls and clocks must be nonnegative",
+                (value.present & (value.values < 0)).any(),
+            )
+            for value in _time_context(batch)
+        ),
     )
     rejected = _read_together([flag for _, flag in checks])
     for (message, _), failed in zip(checks, rejected, strict=True):
         if failed:
             raise ValueError(message)
+
+
+def _time_context(batch: _Batch) -> tuple[Any, ...]:
+    """Return a batch's time inputs, which both families name alike."""
+
+    inputs = batch.inputs
+    return (
+        inputs.time_initial_ms,
+        inputs.time_increment_ms,
+        inputs.player_clock_ms,
+        inputs.opponent_clock_ms,
+    )
 
 
 def _reject_illegal_active_targets(

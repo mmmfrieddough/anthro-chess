@@ -483,6 +483,11 @@ class _BatchSession:
         for conditioning in (
             Conditioning(name="shuffled", kind=ConditioningKind.SHUFFLED),
             Conditioning(name="absent", kind=ConditioningKind.ABSENT),
+            Conditioning(name="clock_absent", kind=ConditioningKind.CLOCK_ABSENT),
+            Conditioning(
+                name="clock_state_absent",
+                kind=ConditioningKind.CLOCK_STATE_ABSENT,
+            ),
         ):
             corrupted[conditioning.name] = (
                 conditioning,
@@ -538,6 +543,10 @@ class _BatchSession:
         rating = batch.inputs.target_rating
         if conditioning.kind is ConditioningKind.TRUE:
             return batch
+        if conditioning.kind is ConditioningKind.CLOCK_ABSENT:
+            return _without_time(batch, control=True)
+        if conditioning.kind is ConditioningKind.CLOCK_STATE_ABSENT:
+            return _without_time(batch, control=False)
         if conditioning.kind is ConditioningKind.ABSENT:
             replacement = OptionalTensor(
                 values=torch.zeros_like(rating.values),
@@ -586,6 +595,29 @@ class _BatchSession:
                 game_ids, ply_indices, present, strict=True
             )
         ]
+
+
+def _without_time(batch: MoveModelBatch, *, control: bool) -> MoveModelBatch:
+    """Return the batch with its clocks, and its control if asked, absent."""
+
+    def absent(value: OptionalTensor) -> OptionalTensor:
+        return OptionalTensor(
+            torch.zeros_like(value.values), torch.zeros_like(value.present)
+        )
+
+    inputs = batch.inputs
+    cleared = replace(
+        inputs,
+        player_clock_ms=absent(inputs.player_clock_ms),
+        opponent_clock_ms=absent(inputs.opponent_clock_ms),
+    )
+    if control:
+        cleared = replace(
+            cleared,
+            time_initial_ms=absent(inputs.time_initial_ms),
+            time_increment_ms=absent(inputs.time_increment_ms),
+        )
+    return replace(batch, inputs=cleared)
 
 
 @dataclass(frozen=True)

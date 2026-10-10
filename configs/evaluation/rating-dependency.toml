@@ -1,4 +1,4 @@
-# Whether a checkpoint reads the rating it is conditioned on.
+# Whether a checkpoint reads the rating it is conditioned on, and the clock.
 #
 # This is a correctness reading rather than a quality one. Nothing in it
 # returns a pass or a fail: weak dependency on an undertrained checkpoint means

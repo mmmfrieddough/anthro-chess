@@ -8,6 +8,7 @@ import pytest
 
 from anthro_chess.data import Speed
 from anthro_chess.evaluation.aggregation import (
+    CLOCK_PRESSURE_DIMENSION,
     COLOR_DIMENSION,
     LEGAL_MOVE_COUNT_DIMENSION,
     OPENING_FAMILY_DIMENSION,
@@ -17,6 +18,7 @@ from anthro_chess.evaluation.aggregation import (
     REPORTED_CHARACTERISTICS,
     RULE_CASE_DIMENSION,
     SPEED_DIMENSION,
+    UNCLOCKED_SLICE,
     UNRATED_SLICE,
     UNTIMED_SLICE,
     SliceAggregator,
@@ -25,14 +27,17 @@ from anthro_chess.evaluation.aggregation import (
 from anthro_chess.evaluation.opening_frequency import OPENING_TIER_NAMES
 from anthro_chess.evaluation.policy import PositionPolicy
 from anthro_chess.evaluation.results.metrics import (
+    CLOCK_PRESSURE_SLICE_NAMES,
     MATERIAL_GAIN_BAND_NAMES,
     OPENING_TIER_SLICE_NAMES,
     PHASE_SLICE_NAMES,
     RATING_BAND_SLICE_NAMES,
     RULE_CASE_SLICE_NAMES,
+    SPEED_SLICE_NAMES,
     UNRATED_SLICE_NAME,
 )
 from anthro_chess.evaluation.slices import (
+    CLOCK_PRESSURE_BUCKETS,
     DEFAULT_RATING_BANDS,
     MATERIAL_GAIN_BAND_FLOORS,
     GamePhase,
@@ -137,6 +142,23 @@ def test_speed_keeps_the_populations_a_pooled_average_would_mix_apart() -> None:
     }
 
 
+def test_the_scramble_is_reported_apart_from_the_decisions_comparable_work_kept() -> (
+    None
+):
+    aggregator = SliceAggregator()
+    aggregator.add(_policy(), _slices(clock_pressure="clock_under_10s"), ())
+    aggregator.add(_policy(ply_index=1), _slices(clock_pressure="clock_30s_plus"), ())
+    aggregator.add(_policy(ply_index=2), _slices(clock_pressure=None), ())
+
+    table = aggregator.compute()
+
+    assert set(table.dimensions[CLOCK_PRESSURE_DIMENSION]) == {
+        "clock_under_10s",
+        "clock_30s_plus",
+        UNCLOCKED_SLICE,
+    }
+
+
 def test_an_empty_evaluation_is_rejected_rather_than_reported_as_zero() -> None:
     assert summarize([]) is None
     with pytest.raises(ValueError, match="at least one scored position"):
@@ -150,6 +172,11 @@ def test_registered_slice_names_match_the_slice_layer() -> None:
         sorted(str(case) for case in REPORTED_CHARACTERISTICS)
     )
     assert UNRATED_SLICE_NAME == UNRATED_SLICE
+    assert SPEED_SLICE_NAMES == (*(str(speed) for speed in Speed), UNTIMED_SLICE)
+    assert CLOCK_PRESSURE_SLICE_NAMES == (
+        *(name for name, _, _ in CLOCK_PRESSURE_BUCKETS),
+        UNCLOCKED_SLICE,
+    )
     assert OPENING_TIER_SLICE_NAMES == OPENING_TIER_NAMES
     assert MATERIAL_GAIN_BAND_NAMES == tuple(MATERIAL_GAIN_BAND_FLOORS)
 
@@ -220,6 +247,7 @@ def _slices(
     legal_move_count: int = 20,
     bucket: str = "11_to_25",
     speed: Speed | None = Speed.BLITZ,
+    clock_pressure: str | None = "clock_30s_plus",
 ) -> PositionSlices:
     return PositionSlices(
         phase=phase,
@@ -228,4 +256,5 @@ def _slices(
         legal_move_count_bucket=bucket,
         rating_band=rating_band,
         speed=speed,
+        clock_pressure=clock_pressure,
     )

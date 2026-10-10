@@ -457,6 +457,19 @@ def test_a_checkpoint_rebuilds_at_the_history_depth_its_run_declared(
     assert runner._model.config.history_positions == 5  # noqa: SLF001
 
 
+def test_a_clock_reading_checkpoint_is_served_as_untimed(tmp_path: Path) -> None:
+    checkpoint = _write_run(tmp_path / "run", seed=5, clock_inputs=True)
+
+    runner = CheckpointModelRunner.load(
+        ModelRunnerConfig(checkpoint_path=checkpoint, device="cpu")
+    )
+    board, moves = _position(("e2e4", "e7e5"))
+    logits = runner.predict(build_decision_context(board, moves, target_rating=1500))
+
+    assert runner._model.config.clock_inputs  # noqa: SLF001
+    assert torch.isfinite(logits).all()
+
+
 def test_runner_rejects_unavailable_explicit_device(tmp_path: Path) -> None:
     checkpoint = _write_run(tmp_path / "run", seed=13)
 
@@ -580,10 +593,11 @@ def _write_run(
     *,
     seed: int,
     history_positions: int | None = None,
+    clock_inputs: bool = False,
 ) -> Path:
     torch.manual_seed(seed)
     path.mkdir(parents=True)
-    config = tiny_model_config()
+    config = tiny_model_config().model_copy(update={"clock_inputs": clock_inputs})
     if history_positions is not None:
         config = config.model_copy(update={"history_positions": history_positions})
     model = MoveModel(config)

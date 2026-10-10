@@ -342,16 +342,18 @@ log, rather than being refused or carrying an assurance nobody earned.
 Which sliced series are **committed** is a deliberate, bounded choice, because
 only a committed series can be compared over the life of the project. Overall
 prediction and legality headlines are committed; so are move loss and mask
-penalty per phase, move loss per default rating band, mask penalty per rule
-case, and the adjudicated human gap per default rating band. Phase is committed on the evidence that held-out mask penalty varies
+penalty per phase, move loss per default rating band, move loss per speed class
+and per bucket of the mover's own clock, mask penalty per rule case, and the
+adjudicated human gap per default rating band. Phase is committed on the evidence that held-out mask penalty varies
 severalfold between opening, middlegame, and endgame positions: a pool-wide
 average sits between those populations, and a comparison that does not hold
 phase fixed reads a shift in game-length or phase composition as a legality
-change. Everything else — color, speed, legal-move-count buckets,
-cross-conditioning tables, per-position records — stays in the machine-local
-detail tier. Speed stays there while one corpus is one class: the slice is what
-makes a mixed pool readable, and committing a series over it is a question for
-the generation that spans speeds.
+change. Speed is committed because the pool spans speeds and a model blind to
+the clock regresses toward the commonest one, and the clock buckets because
+comparable work drops every decision under thirty seconds, so a figure pooled
+across them is one no published result can be read against. Everything else
+stays in the machine-local detail tier: color, legal-move-count buckets,
+cross-conditioning tables, and per-position records.
 
 Per-position records are the one part of that tier a run has to ask for. Two
 kinds qualify: every scored decision, and every decision a predicate
@@ -1075,6 +1077,13 @@ than how much it relies on the value, and it is not comparable to the shuffled
 degradation beside it. Read absence as an out-of-distribution probe until
 training masks the rating on some fraction of examples; it would become a
 dependency treatment in the ordinary sense if it did.
+
+The clock is read by absence alone, in two forms: the whole time context
+withheld, and the clocks withheld with the control kept. Those are the two
+contexts a clock-reading model is served with when no live clock reaches it, so
+each degradation is what serving that way costs, and a model that reads no clock
+reports zero for both. Training hides each on a share of decisions, so unlike
+the rating's absence these are trained inputs.
 
 Direction matters as well as magnitude. Evaluating each context slice under
 each conditioning value produces a cross-conditioning comparison whose best

@@ -191,6 +191,7 @@ def _slice_table(move_losses: dict[str, float]) -> SliceTable:
                 legal_move_count_bucket="11_to_25",
                 rating_band="1200_to_1599",
                 speed=Speed.BLITZ,
+                clock_pressure="clock_30s_plus",
             ),
             (),
             opening_family=family,
