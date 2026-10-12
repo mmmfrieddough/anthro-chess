@@ -107,6 +107,24 @@ toward the human rate, for example a mate-available gap of 0.138 falling to
 seen from the other side: the model now ranks the best move lower more often, as
 a human under the clock does.
 
+**A declared control widens the dial, and the widening grows with size.** A
+second seed repeats every held-out reading above to within 0.003. With the
+ladder's seats shown a 3+0 control and no clock, through a patch that was not
+recorded and carries no floor, `ladder.fitted_rating_slope` at T=0 / 0.7 / 1.0
+reads:
+
+| | untimed | 3+0 declared |
+| --- | --- | --- |
+| vehicle replicates | 0.298 / 0.303 / 0.303 | the vehicle reads no clock |
+| clock arm, mean of two seeds | 0.294 / 0.305 / 0.302 | 0.376 / 0.385 / 0.389 |
+| width 512, `0090`'s trunk | 0.401 / 0.420 / 0.375 | it reads no clock |
+| width 512 with clock inputs | 0.420 / 0.418 / 0.397 | 0.498 / 0.523 / 0.527 |
+
+Order stays perfect throughout. At width 512 the clock also cuts held-out move
+loss by 0.030, against 0.026 at the vehicle. Rating balance at four adds nothing
+to the declared-control dial at the vehicle, while its held-out gain in the
+rating tails adds to the clock's in full.
+
 ## What This Gives Up
 
 **The gain is not served yet.** Until a running clock reaches the model, and
