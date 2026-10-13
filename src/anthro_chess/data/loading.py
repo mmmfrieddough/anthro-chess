@@ -119,6 +119,7 @@ class SequenceExample:
         white = _WHITE_OUTCOMES.get(self.result)
         if white is None:
             return [None] * len(self.plies)
+        # The classes are symmetric about a draw, so this flips a win and a loss.
         return [
             white if ply.board.side_to_move == 0 else OUTCOME_WIN - white
             for ply in self.plies

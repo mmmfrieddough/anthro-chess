@@ -522,12 +522,7 @@ class SourceDestinationHead(nn.Module):
 
 
 class ValueHead(nn.Module):
-    """Predict what the game came to for the mover: loss, draw, or win.
-
-    Chessformer's head: the squares mean-pooled, normalized, and read through
-    one hidden layer. It shapes the trunk through its loss and nothing serves
-    its output.
-    """
+    """Predict what the game came to for the mover: loss, draw, or win."""
 
     def __init__(self, config: MoveModelConfig) -> None:
         super().__init__()
