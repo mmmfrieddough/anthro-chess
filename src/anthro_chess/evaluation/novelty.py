@@ -707,10 +707,12 @@ def _project_row(row: Mapping[str, Any], actions: Sequence[int]) -> dict[str, An
 
     Everything else about the game is the source's, truncated to the plies the
     derivation reached. The clock trace is projected rather than recomputed:
-    this benchmark reads no timing, and inventing move times for moves nobody
-    played would put fabricated data in the one place a later timing benchmark
-    would trust. The remaining per-ply clock column is never read here, so the
-    pool read leaves it behind rather than truncating it for nobody.
+    inventing move times for moves nobody played would put fabricated data in
+    the one place a later timing benchmark would trust. A model that reads the
+    clock therefore sees the source game's clocks beside every arm's moves,
+    which holds the time context fixed across doses. The remaining per-ply
+    clock column is never read here, so the pool read leaves it behind rather
+    than truncating it for nobody.
     """
 
     updated = dict(row)

@@ -827,6 +827,25 @@ RATING_BAND_SLICE_NAMES: tuple[str, ...] = (
 #: Slice name for positions whose player rating is unavailable.
 UNRATED_SLICE_NAME = "unrated"
 
+#: Speed classes, and the slice for a game whose columns name no control.
+SPEED_SLICE_NAMES: tuple[str, ...] = (
+    "ultrabullet",
+    "bullet",
+    "blitz",
+    "rapid",
+    "classical",
+    "correspondence",
+    "untimed",
+)
+
+#: How long the mover had left, and the slice for a clock that is unknown.
+CLOCK_PRESSURE_SLICE_NAMES: tuple[str, ...] = (
+    "clock_under_10s",
+    "clock_10s_to_30s",
+    "clock_30s_plus",
+    "unclocked",
+)
+
 #: Rule cases that can hold at a position with a move to predict.
 RULE_CASE_SLICE_NAMES: tuple[str, ...] = (
     "castling_available",
@@ -875,6 +894,45 @@ HELD_OUT_MOVE_LOSS_BY_RATING_BAND: Mapping[str, MetricDefinition] = {
         )
     )
     for band in (*RATING_BAND_SLICE_NAMES, UNRATED_SLICE_NAME)
+}
+
+HELD_OUT_MOVE_LOSS_BY_SPEED: Mapping[str, MetricDefinition] = {
+    speed: register_metric(
+        MetricDefinition(
+            identifier=f"held_out.move_loss_{speed}",
+            family=HELD_OUT_PREDICTION_FAMILY.identifier,
+            direction=MetricDirection.LOWER_IS_BETTER,
+            definition_version=1,
+            summary=(
+                f"Raw-logit cross-entropy of the human move on {speed} "
+                "positions. A model that does not read the clock regresses "
+                "toward the commonest speed, which a pool-wide mean hides."
+            ),
+            cost=MetricCost.SINGLE_PASS,
+            projection=MOVE_PREDICTION_PROJECTION.name,
+        )
+    )
+    for speed in SPEED_SLICE_NAMES
+}
+
+HELD_OUT_MOVE_LOSS_BY_CLOCK_PRESSURE: Mapping[str, MetricDefinition] = {
+    pressure: register_metric(
+        MetricDefinition(
+            identifier=f"held_out.move_loss_{pressure}",
+            family=HELD_OUT_PREDICTION_FAMILY.identifier,
+            direction=MetricDirection.LOWER_IS_BETTER,
+            definition_version=1,
+            summary=(
+                "Raw-logit cross-entropy of the human move, sliced by the "
+                f"mover's own clock ({pressure}). Comparable work excludes "
+                "decisions under thirty seconds, so the slices below that are "
+                "the ones it never measured."
+            ),
+            cost=MetricCost.SINGLE_PASS,
+            projection=MOVE_PREDICTION_PROJECTION.name,
+        )
+    )
+    for pressure in CLOCK_PRESSURE_SLICE_NAMES
 }
 
 LEGALITY_MASK_PENALTY_BY_PHASE: Mapping[str, MetricDefinition] = {
@@ -1345,6 +1403,39 @@ DEPENDENCY_RATING_ABSENT_DEGRADATION = register_metric(
         summary=(
             "Increase in held-out move loss when the rating input is marked "
             "absent on positions that have one."
+        ),
+        cost=MetricCost.REPEATED_PASS,
+        projection=MOVE_PREDICTION_PROJECTION.name,
+    )
+)
+
+DEPENDENCY_CLOCK_ABSENT_DEGRADATION = register_metric(
+    MetricDefinition(
+        identifier="dependency.clock_absent_degradation",
+        family=CORRECTNESS_FAMILY.identifier,
+        direction=MetricDirection.HIGHER_IS_BETTER,
+        definition_version=1,
+        summary=(
+            "Increase in held-out move loss when the whole time context, the "
+            "control and the clocks, is marked absent. What serving a "
+            "clock-reading model without a clock costs; not measured for a "
+            "model that reads none."
+        ),
+        cost=MetricCost.REPEATED_PASS,
+        projection=MOVE_PREDICTION_PROJECTION.name,
+    )
+)
+
+DEPENDENCY_CLOCK_STATE_ABSENT_DEGRADATION = register_metric(
+    MetricDefinition(
+        identifier="dependency.clock_state_absent_degradation",
+        family=CORRECTNESS_FAMILY.identifier,
+        direction=MetricDirection.HIGHER_IS_BETTER,
+        definition_version=1,
+        summary=(
+            "Increase in held-out move loss when the clocks and last move "
+            "times are marked absent and the time control is kept. What a "
+            "declared control without a running clock costs."
         ),
         cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,

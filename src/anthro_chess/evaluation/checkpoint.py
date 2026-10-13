@@ -165,6 +165,12 @@ CHECKPOINT_COST_BENCHMARK = BenchmarkReference(
 logger = logging.getLogger(__name__)
 
 _TRUE_CONDITIONING = Conditioning(name="true", kind=ConditioningKind.TRUE)
+#: Only a model that reads the clock is scored without one: any other model
+#: would return its true-conditioning logits again.
+_CLOCK_CONDITIONINGS = (
+    Conditioning(name="clock_absent", kind=ConditioningKind.CLOCK_ABSENT),
+    Conditioning(name="clock_state_absent", kind=ConditioningKind.CLOCK_STATE_ABSENT),
+)
 
 
 def _constant_conditioning(rating: int) -> Conditioning:
@@ -483,6 +489,7 @@ class _BatchSession:
         for conditioning in (
             Conditioning(name="shuffled", kind=ConditioningKind.SHUFFLED),
             Conditioning(name="absent", kind=ConditioningKind.ABSENT),
+            *(_CLOCK_CONDITIONINGS if self._runner.model.config.clock_inputs else ()),
         ):
             corrupted[conditioning.name] = (
                 conditioning,
@@ -538,11 +545,12 @@ class _BatchSession:
         rating = batch.inputs.target_rating
         if conditioning.kind is ConditioningKind.TRUE:
             return batch
+        if conditioning.kind is ConditioningKind.CLOCK_ABSENT:
+            return _without_time(batch, control=True)
+        if conditioning.kind is ConditioningKind.CLOCK_STATE_ABSENT:
+            return _without_time(batch, control=False)
         if conditioning.kind is ConditioningKind.ABSENT:
-            replacement = OptionalTensor(
-                values=torch.zeros_like(rating.values),
-                present=torch.zeros_like(rating.present),
-            )
+            replacement = _absent(rating)
         elif conditioning.kind is ConditioningKind.CONSTANT:
             replacement = OptionalTensor(
                 values=torch.where(
@@ -586,6 +594,32 @@ class _BatchSession:
                 game_ids, ply_indices, present, strict=True
             )
         ]
+
+
+def _absent(value: OptionalTensor) -> OptionalTensor:
+    """Return a nullable input of the same shape with every value absent."""
+
+    return OptionalTensor(
+        torch.zeros_like(value.values), torch.zeros_like(value.present)
+    )
+
+
+def _without_time(batch: MoveModelBatch, *, control: bool) -> MoveModelBatch:
+    """Return the batch with its clocks, and its control if asked, absent."""
+
+    inputs = batch.inputs
+    cleared = replace(
+        inputs,
+        player_clock_ms=_absent(inputs.player_clock_ms),
+        opponent_clock_ms=_absent(inputs.opponent_clock_ms),
+    )
+    if control:
+        cleared = replace(
+            cleared,
+            time_initial_ms=_absent(inputs.time_initial_ms),
+            time_increment_ms=_absent(inputs.time_increment_ms),
+        )
+    return replace(batch, inputs=cleared)
 
 
 @dataclass(frozen=True)

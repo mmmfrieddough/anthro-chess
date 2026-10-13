@@ -37,10 +37,12 @@ from anthro_chess.data.schema import (
     row_game_id,
 )
 from anthro_chess.evaluation.aggregation import (
+    CLOCK_PRESSURE_DIMENSION,
     OPENING_TIER_DIMENSION,
     PHASE_DIMENSION,
     RATING_DIMENSION,
     RULE_CASE_DIMENSION,
+    SPEED_DIMENSION,
     SliceAggregator,
     SliceMembership,
     SliceTable,
@@ -62,9 +64,11 @@ from anthro_chess.evaluation.results import (
 from anthro_chess.evaluation.results.metrics import (
     HELD_OUT_LEGAL_MOVE_LOSS,
     HELD_OUT_MOVE_LOSS,
+    HELD_OUT_MOVE_LOSS_BY_CLOCK_PRESSURE,
     HELD_OUT_MOVE_LOSS_BY_OPENING_TIER,
     HELD_OUT_MOVE_LOSS_BY_PHASE,
     HELD_OUT_MOVE_LOSS_BY_RATING_BAND,
+    HELD_OUT_MOVE_LOSS_BY_SPEED,
     HELD_OUT_TOP_K_ACCURACY,
     HELD_OUT_UNIFORM_OVER_LEGAL_MOVE_LOSS,
     LEGALITY_LEGAL_MARGIN,
@@ -448,6 +452,8 @@ _SLICED_METRICS: tuple[tuple[str, Mapping[str, MetricDefinition], str], ...] = (
     (PHASE_DIMENSION, HELD_OUT_MOVE_LOSS_BY_PHASE, "move_loss"),
     (PHASE_DIMENSION, LEGALITY_MASK_PENALTY_BY_PHASE, "mask_penalty"),
     (RATING_DIMENSION, HELD_OUT_MOVE_LOSS_BY_RATING_BAND, "move_loss"),
+    (SPEED_DIMENSION, HELD_OUT_MOVE_LOSS_BY_SPEED, "move_loss"),
+    (CLOCK_PRESSURE_DIMENSION, HELD_OUT_MOVE_LOSS_BY_CLOCK_PRESSURE, "move_loss"),
     (RULE_CASE_DIMENSION, LEGALITY_MASK_PENALTY_BY_RULE_CASE, "mask_penalty"),
     (OPENING_TIER_DIMENSION, HELD_OUT_MOVE_LOSS_BY_OPENING_TIER, "move_loss"),
 )

@@ -29,6 +29,7 @@ from anthro_chess.evaluation.puzzles import (
     puzzle_set_identity,
 )
 from anthro_chess.evaluation.slices import (
+    CLOCK_PRESSURE_BUCKETS,
     DEFAULT_RATING_BANDS,
     LEGAL_MOVE_COUNT_BUCKETS,
     PREDICATE_REGISTRY,
@@ -46,6 +47,7 @@ from anthro_chess.evaluation.slices import (
     board_from_encoding,
     board_phase,
     board_piece_ids,
+    clock_pressure_bucket,
     game_phase,
     legal_move_count_bucket,
     match_position_predicates,
@@ -471,6 +473,7 @@ __all__ = [
     "check_leakage",
     "benchmark_dependency",
     "evaluate_checkpoint",
+    "CLOCK_PRESSURE_BUCKETS",
     "LEGAL_MOVE_COUNT_BUCKETS",
     "SLICE_SCHEME_VERSION",
     "VALIDATION_METRICS_VERSION",
@@ -577,6 +580,7 @@ __all__ = [
     "freeze_pool",
     "game_ids_sha256",
     "game_phase",
+    "clock_pressure_bucket",
     "legal_move_count_bucket",
     "match_position_predicates",
     "ply_characteristics",

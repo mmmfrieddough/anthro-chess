@@ -18,6 +18,7 @@ from anthro_chess.evaluation import (
     board_from_encoding,
     board_phase,
     board_piece_ids,
+    clock_pressure_bucket,
     game_phase,
     legal_move_count_bucket,
     match_position_predicates,
@@ -142,6 +143,36 @@ def test_every_position_of_a_game_carries_that_game_s_speed(
 
     assert [item.speed for item in slices] == [Speed.BLITZ, Speed.BLITZ]
     assert slices[0].as_record()["speed"] == "blitz"
+
+
+def test_clock_pressure_reads_the_time_the_mover_had_left_before_moving(
+    action_ids: Callable[[tuple[str, ...]], tuple[int, ...]],
+) -> None:
+    game = GameEncodingInput(
+        game_id=4,
+        ruleset="standard",
+        initial_position=chess.STARTING_FEN,
+        action_ids=action_ids(("e2e4", "e7e5", "g1f3", "b8c6")),
+        white_normalized_rating=1500,
+        black_normalized_rating=1500,
+        time_initial_ms=30_000,
+        time_increment_ms=0,
+        clock_remaining_ms=(9_999, None, 9_000, 8_000),
+    )
+
+    slices = [position_slices(ply) for ply in encode_game(game)]
+
+    # Each side's first decision reads the initial clock. Black's clock after
+    # its first move is unknown, so its second decision has no pressure.
+    assert [item.clock_pressure for item in slices] == [
+        "clock_30s_plus",
+        "clock_30s_plus",
+        "clock_under_10s",
+        None,
+    ]
+    assert clock_pressure_bucket(29_999) == "clock_10s_to_30s"
+    assert clock_pressure_bucket(10_000) == "clock_10s_to_30s"
+    assert slices[2].as_record()["clock_pressure"] == "clock_under_10s"
 
 
 def test_slices_report_absent_ratings_without_inventing_a_band(

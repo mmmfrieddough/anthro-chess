@@ -247,6 +247,17 @@ Dynamic features include:
 Dynamic metadata must be represented per ply because it changes throughout the
 game.
 
+The current implementation reads time when a model is configured to. Each
+decision sees the game's initial clock and increment, both players' clocks
+before the move, and the time each player spent on their last move, all in the
+mover's frame, and the result is added to every square token beside the rating.
+Every value travels with a presence flag, so an unknown clock is an absence
+rather than a zero, and training hides each partial context a decision can be
+served with on a share of decisions, so that absence is a trained input. A live game carries no clock yet,
+so a clock-reading model is served as untimed. Where these enter, and why the
+move times are differenced inside the model rather than encoded, is
+`docs/decisions/0095-the-clock-enters-beside-the-rating-and-absence-is-trained.md`.
+
 ## Action Output
 
 The action head should output logits over a fixed action vocabulary. Most
