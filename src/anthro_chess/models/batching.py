@@ -14,6 +14,7 @@ from anthro_chess.chess import ACTION_VOCABULARY_SIZE
 from anthro_chess.data import (
     BOARD_SQUARE_COUNT,
     EN_PASSANT_TOKEN_COUNT,
+    OUTCOME_COUNT,
     REPETITION_STATE_COUNT,
     DecisionColumn,
     DecisionContext,
@@ -92,6 +93,7 @@ class MoveModelBatch:
     game_ids: Tensor
     ply_indices: Tensor
     decision_columns: Tensor
+    outcome: OptionalTensor
 
     @property
     def history_floor(self) -> Tensor:
@@ -176,6 +178,7 @@ class MoveModelBatch:
             decision_columns=_decision_columns(
                 batch.action_targets.shape, tensor_device
             ),
+            outcome=optional(batch.outcome.values, batch.outcome.present),
         )
 
     @classmethod
@@ -257,8 +260,8 @@ class MoveModelBatch:
         def column(name: DecisionColumn) -> Tensor:
             return crossed[name]
 
-        # A live history carries no clock, so every served decision presents
-        # the time context as absent.
+        # A live history carries no clock and no result, so every served
+        # decision presents both as absent.
         def absent() -> OptionalTensor:
             return OptionalTensor(
                 torch.zeros((count, width), dtype=torch.long, device=tensor_device),
@@ -296,6 +299,7 @@ class MoveModelBatch:
             ),
             ply_indices=column(DecisionColumn.PLY_INDEX),
             decision_columns=_decision_columns((count, width), tensor_device),
+            outcome=absent(),
         )
         result.validate()
         return result
@@ -372,7 +376,7 @@ def _reject_invalid_batch(batch: _Batch) -> None:
     )
     if any(value.shape != expected_shape for value in aligned):
         raise ValueError("model inputs, targets, and masks must align")
-    nullable = (batch.inputs.target_rating, *_time_context(batch))
+    nullable = (batch.inputs.target_rating, *_time_context(batch), batch.outcome)
     if any(
         value.values.shape != expected_shape or value.present.shape != expected_shape
         for value in nullable
@@ -453,6 +457,10 @@ def _reject_invalid_values(batch: _Batch) -> None:
         (
             "target ratings must be nonnegative",
             (ratings.present & (ratings.values < 0)).any(),
+        ),
+        (
+            "outcomes are outside the outcome classes",
+            (batch.outcome.present & (batch.outcome.values >= OUTCOME_COUNT)).any(),
         ),
         *(
             (

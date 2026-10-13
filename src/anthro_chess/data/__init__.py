@@ -38,6 +38,7 @@ from anthro_chess.data.encoding import (
 )
 from anthro_chess.data.loading import (
     LOADER_STATE_VERSION,
+    OUTCOME_COUNT,
     SELECTION_SPEC_VERSION,
     DataLoadingError,
     OptionalIntBatch,
@@ -94,6 +95,7 @@ __all__ = [
     "ENCODING_SCHEMA_SHA256",
     "ENCODING_VERSION",
     "LOADER_STATE_VERSION",
+    "OUTCOME_COUNT",
     "RepetitionCounter",
     "REPETITION_STATE_COUNT",
     "SELECTION_SPEC_VERSION",

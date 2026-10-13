@@ -811,6 +811,41 @@ def test_shard_backed_training_runs_and_records_which_loader_read_the_corpus(
     ]
 
 
+def test_a_value_head_trains_on_packed_shards_and_its_checkpoint_serves(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        run_name="run",
+        validation=False,
+        train_batch="positions_per_batch = 32",
+        train_streaming=_SHARD_BACKED,
+        model_extra="value_head = true",
+    )
+    resolved = load_config(TrainingConfig, path=config_path)
+    # Seeded the way the runner seeds its own, so this is the run's start.
+    torch.manual_seed(resolved.value.seed)
+    initial = MoveModel(resolved.value.model)
+
+    result = run_training(resolved, output_directory=tmp_path / "run")
+
+    runner = CheckpointModelRunner.load(
+        ModelRunnerConfig(checkpoint_path=result.checkpoint_path, device="cpu")
+    )
+    outcome_weight = "value_head.layers.3.weight"
+    assert not torch.equal(
+        runner._model.state_dict()[outcome_weight],  # noqa: SLF001
+        initial.state_dict()[outcome_weight],
+    )
+
+
 def test_a_balanced_run_records_its_composition_and_warns_of_repetition(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,

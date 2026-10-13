@@ -103,7 +103,10 @@ from anthro_chess.training.efficiency import (
     execution_record as efficiency_execution_record,
 )
 from anthro_chess.training.health import StepHealth, StepHealthMonitor
-from anthro_chess.training.losses import masked_action_cross_entropy
+from anthro_chess.training.losses import (
+    masked_action_cross_entropy,
+    masked_outcome_cross_entropy,
+)
 from anthro_chess.training.schedule import LearningRateSchedule
 from anthro_chess.training.tensorboard import (
     TENSORBOARD_DIRECTORY,
@@ -872,6 +875,9 @@ def _optimize(
     # Each rank takes an equal share of every step's micro-batches, so the
     # effective batch is the configured one however many ranks share it.
     local_accumulation = gradient_accumulation_steps // parallel.world_size
+    value_loss_weight = (
+        model.config.value_loss_weight if model.config.value_head else None
+    )
     training_sha256 = training_identity_sha256(compatibility)
     saved_checkpoint: Path | None = None
     saved_step = starting_step
@@ -973,15 +979,35 @@ def _optimize(
                     else nullcontext()
                 ):
                     with autocast:
-                        loss = masked_action_cross_entropy(
-                            trained(batch),
-                            batch.action_targets,
-                            batch.action_loss_mask,
-                        )
+                        if value_loss_weight is None:
+                            loss = masked_action_cross_entropy(
+                                trained(batch),
+                                batch.action_targets,
+                                batch.action_loss_mask,
+                            )
+                            objective = loss
+                        else:
+                            action_logits, outcome_logits = trained(
+                                batch, with_value=True
+                            )
+                            loss = masked_action_cross_entropy(
+                                action_logits,
+                                batch.action_targets,
+                                batch.action_loss_mask,
+                            )
+                            objective = (
+                                loss
+                                + value_loss_weight
+                                * masked_outcome_cross_entropy(
+                                    outcome_logits,
+                                    batch.outcome,
+                                    batch.action_loss_mask,
+                                )
+                            )
                     # Backward stays outside the autocast scope. Each
                     # operation's backward already runs in the dtype its forward
                     # chose, and nesting it would autocast a second time.
-                    (loss / local_accumulation).backward()
+                    (objective / local_accumulation).backward()
                 if profile_phases:
                     _synchronize_device(device)
                 compute_seconds += time.perf_counter() - compute_started

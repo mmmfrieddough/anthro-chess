@@ -43,6 +43,11 @@ class MoveModelConfig(ConfigModel):
     #: without the initial one. The corpus presents almost none of these on its
     #: own.
     clock_dropout: float = Field(default=0.05, ge=0.0, le=1.0)
+    #: Whether the trunk also predicts the game's outcome for the mover, as an
+    #: auxiliary objective beside the move.
+    value_head: bool = False
+    #: The outcome loss's weight against a move loss of one.
+    value_loss_weight: float = Field(default=0.1, gt=0.0)
 
     @model_validator(mode="after")
     def validate_attention_shape(self) -> MoveModelConfig:

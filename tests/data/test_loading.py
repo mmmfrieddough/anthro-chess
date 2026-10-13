@@ -494,6 +494,7 @@ def _row(
         "clock_remaining_delta_ms": encode_clock_remaining_deltas(
             [59_000 - 500 * index for index in range(len(moves))]
         ),
+        "result": "1-0",
         "split": "train",
     }
 

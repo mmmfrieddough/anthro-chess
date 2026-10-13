@@ -6,6 +6,8 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
+from anthro_chess.models.batching import OptionalTensor
+
 #: What :func:`torch.nn.functional.cross_entropy` drops, and its own default.
 _IGNORE_INDEX = -100
 
@@ -43,3 +45,23 @@ def masked_action_cross_entropy(
         supervised.reshape(-1),
         ignore_index=_IGNORE_INDEX,
     )
+
+
+def masked_outcome_cross_entropy(
+    logits: Tensor,
+    outcome: OptionalTensor,
+    loss_mask: Tensor,
+) -> Tensor:
+    """Average outcome cross-entropy over enabled timesteps whose result is known.
+
+    A batch can hold no recorded result at all, so the count is clamped to one
+    and such a batch contributes no loss rather than a non-finite one.
+    """
+
+    known = (outcome.present & loss_mask).float()
+    losses = F.cross_entropy(
+        logits.flatten(0, -2),
+        outcome.values.flatten(),
+        reduction="none",
+    ).view_as(known)
+    return (losses * known).sum() / known.sum().clamp(min=1.0)

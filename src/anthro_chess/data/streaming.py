@@ -883,6 +883,7 @@ def _materialize_batch(job: _BatchJob) -> SequenceBatch:
                 game_id=chunk[0].game_id,
                 start_ply=chunk[0].ply_index,
                 plies=chunk,
+                result=rows[row_index][NormalizedColumn.RESULT],
             )
         )
     if job.packed_width is None:

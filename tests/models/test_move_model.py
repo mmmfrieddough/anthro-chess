@@ -446,7 +446,8 @@ def test_the_identity_carries_every_value_needed_to_rebuild_the_model() -> None:
     config_record = MoveModel(config).identity()["config"]
 
     assert config_record == config.model_dump(
-        mode="json", exclude={"clock_inputs", "clock_dropout"}
+        mode="json",
+        exclude={"clock_inputs", "clock_dropout", "value_head", "value_loss_weight"},
     )
     assert MoveModelConfig.model_validate(config_record) == config
     assert (

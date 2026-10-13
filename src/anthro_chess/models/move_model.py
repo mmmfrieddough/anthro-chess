@@ -10,7 +10,7 @@ tokens along a geometric bias generated from the position itself. Decisions
 from __future__ import annotations
 
 from functools import cache
-from typing import cast
+from typing import Literal, cast, overload
 
 import chess
 import torch
@@ -26,6 +26,7 @@ from anthro_chess.chess import (
 from anthro_chess.data import (
     BOARD_SQUARE_COUNT,
     EN_PASSANT_TOKEN_COUNT,
+    OUTCOME_COUNT,
     REPETITION_STATE_COUNT,
     en_passant_token,
     encoding_identity,
@@ -59,6 +60,10 @@ _CLOCK_FEATURE_COUNT = 6
 #: Fields a model reading no clock leaves out of its identity, so that it is
 #: still the identity every run recorded before they existed.
 _CLOCK_CONFIG_FIELDS = ("clock_inputs", "clock_dropout")
+#: The same, for a model predicting no outcome.
+_VALUE_CONFIG_FIELDS = ("value_head", "value_loss_weight")
+#: Chessformer's value head width, which it holds at every model size.
+_VALUE_HIDDEN_DIM = 128
 
 
 class RatingEmbedding(nn.Module):
@@ -516,6 +521,29 @@ class SourceDestinationHead(nn.Module):
         return torch.cat((moves, terminals), dim=-1)
 
 
+class ValueHead(nn.Module):
+    """Predict what the game came to for the mover: loss, draw, or win.
+
+    Chessformer's head: the squares mean-pooled, normalized, and read through
+    one hidden layer. It shapes the trunk through its loss and nothing serves
+    its output.
+    """
+
+    def __init__(self, config: MoveModelConfig) -> None:
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.LayerNorm(config.model_dim),
+            nn.Linear(config.model_dim, _VALUE_HIDDEN_DIM),
+            nn.ReLU(),
+            nn.Linear(_VALUE_HIDDEN_DIM, OUTCOME_COUNT),
+        )
+
+    def forward(self, squares: Tensor) -> Tensor:
+        """Return outcome logits shaped like the decisions' index."""
+
+        return cast(Tensor, self.layers(squares.mean(dim=-2)))
+
+
 class MoveModel(nn.Module):
     """Predict human action logits from one decision and the boards behind it."""
 
@@ -542,17 +570,43 @@ class MoveModel(nn.Module):
         # cannot be read without also reading the configuration.
         self.norm = nn.LayerNorm(self.config.model_dim)
         self.action_head = SourceDestinationHead(self.config)
+        self.value_head = ValueHead(self.config) if self.config.value_head else None
 
-    def forward(self, batch: MoveModelBatch) -> Tensor:
+    @overload
+    def forward(self, batch: MoveModelBatch) -> Tensor: ...
+
+    @overload
+    def forward(
+        self,
+        batch: MoveModelBatch,
+        *,
+        with_value: Literal[True],
+    ) -> tuple[Tensor, Tensor]: ...
+
+    def forward(
+        self,
+        batch: MoveModelBatch,
+        *,
+        with_value: bool = False,
+    ) -> Tensor | tuple[Tensor, Tensor]:
         """Return raw action logits shaped batch by sequence by vocabulary.
 
         Every batch is validated by whichever factory built it, so nothing is
         rechecked here. Padded timesteps produce ordinary finite logits that no
         caller reads: the loss ignores them by target, and every scoring path
         gathers by the loss mask before looking.
+
+        ``with_value`` also returns the outcome logits, from the same pass.
         """
 
-        return self.decide(batch, batch.decision_columns)
+        decisions = batch.decision_columns
+        if not with_value:
+            return self.decide(batch, decisions)
+        if self.value_head is None:
+            raise ValueError("this model has no value head")
+        squares = self.encode(batch, decisions)
+        black = _at_decision(batch.inputs.side_to_move, decisions).bool()
+        return self.action_head(squares, black), self.value_head(squares)
 
     def decide_at(self, batch: MoveModelBatch, decisions: Tensor) -> Tensor:
         """Return logits for one named ply per row, shaped batch by vocabulary.
@@ -626,7 +680,10 @@ def model_identity(config: MoveModelConfig) -> dict[str, object]:
         "version": 7,
         "config": config.model_dump(
             mode="json",
-            exclude=None if config.clock_inputs else set(_CLOCK_CONFIG_FIELDS),
+            exclude={
+                *(() if config.clock_inputs else _CLOCK_CONFIG_FIELDS),
+                *(() if config.value_head else _VALUE_CONFIG_FIELDS),
+            },
         ),
         "action_vocabulary": action_vocabulary_identity(),
         "encoding": encoding_identity(),

@@ -70,8 +70,17 @@ _LOADER_COLUMNS = (
     NormalizedColumn.TIME_INITIAL_MS,
     NormalizedColumn.TIME_INCREMENT_MS,
     NormalizedColumn.CLOCK_REMAINING_DELTA_MS,
+    NormalizedColumn.RESULT,
     NormalizedColumn.SPLIT,
 )
+#: What a game came to for the player choosing a decision's action.
+OUTCOME_LOSS = 0
+OUTCOME_DRAW = 1
+OUTCOME_WIN = 2
+OUTCOME_COUNT = 3
+#: PGN's own token for a result nobody recorded.
+UNKNOWN_RESULT = "*"
+_WHITE_OUTCOMES = {"1-0": OUTCOME_WIN, "0-1": OUTCOME_LOSS, "1/2-1/2": OUTCOME_DRAW}
 
 LegalActionTensor: TypeAlias = tuple[tuple[tuple[int, ...], ...], ...]
 #: One planned cut of one example: its index, where in it the cut starts, and
@@ -82,12 +91,17 @@ _Packed = TypeVar("_Packed")
 
 @dataclass(frozen=True)
 class SequenceExample:
-    """One full game or contiguous fixed-length game chunk."""
+    """One full game or contiguous fixed-length game chunk.
+
+    ``result`` is the whole game's PGN result, which a chunk shares with every
+    other chunk of its game.
+    """
 
     shard_index: int
     game_id: int
     start_ply: int
     plies: tuple[PlyEncoding, ...]
+    result: str = UNKNOWN_RESULT
 
     def __post_init__(self) -> None:
         if not self.plies:
@@ -96,6 +110,19 @@ class SequenceExample:
             raise ValueError("sequence game_id must match its encoded plies")
         if self.plies[0].ply_index != self.start_ply:
             raise ValueError("sequence start_ply must match its first encoded ply")
+        if self.result != UNKNOWN_RESULT and self.result not in _WHITE_OUTCOMES:
+            raise ValueError(f"unrecognized game result: {self.result!r}")
+
+    def outcomes(self) -> list[int | None]:
+        """Return each ply's outcome for its mover, or ``None`` throughout."""
+
+        white = _WHITE_OUTCOMES.get(self.result)
+        if white is None:
+            return [None] * len(self.plies)
+        return [
+            white if ply.board.side_to_move == 0 else OUTCOME_WIN - white
+            for ply in self.plies
+        ]
 
 
 # Every dataclass below that holds an array compares by identity: a generated
@@ -165,6 +192,7 @@ class SequenceBatch:
     legal_action_ids: LegalActionTensor | None
     game_ids: np.ndarray
     ply_indices: np.ndarray
+    outcome: OptionalIntBatch
 
     @property
     def batch_size(self) -> int:
@@ -439,6 +467,7 @@ class SequenceDataset(Sequence[SequenceExample]):
                             game_id=game.game_id,
                             start_ply=chunk[0].ply_index,
                             plies=chunk,
+                            result=row[NormalizedColumn.RESULT],
                         )
                     )
                 identity_records.append(
@@ -536,6 +565,7 @@ class SequenceDataLoader(SequenceBatchSource):
             game_id=example.game_id,
             start_ply=plies[0].ply_index,
             plies=plies,
+            result=example.result,
         )
 
     @property
@@ -738,7 +768,11 @@ def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
     if not examples:
         raise ValueError("cannot collate an empty sequence collection")
     rows = [example.plies for example in examples]
-    return _collate_rows(rows, max(len(row) for row in rows))
+    return _collate_rows(
+        rows,
+        max(len(row) for row in rows),
+        [example.outcomes() for example in examples],
+    )
 
 
 def collate_packed(
@@ -758,12 +792,14 @@ def collate_packed(
     plies = tuple(ply for example in examples for ply in example.plies)
     if len(plies) > width:
         raise ValueError("packed examples do not fit the batch width")
-    return _collate_rows([plies], width)
+    outcomes = [outcome for example in examples for outcome in example.outcomes()]
+    return _collate_rows([plies], width, [outcomes])
 
 
 def _collate_rows(
     rows: Sequence[Sequence[PlyEncoding]],
     width: int,
+    outcomes: Sequence[Sequence[int | None]],
 ) -> SequenceBatch:
     """Write rows of already-laid-out plies into the batch's arrays.
 
@@ -797,22 +833,24 @@ def _collate_rows(
             values[index, : lengths[index]] = [getter(ply) for ply in row]
         return values
 
-    def optional(
-        getter: Callable[[PlyEncoding], int | None],
+    def nullable(
+        columns: Sequence[Sequence[int | None]],
         dtype: type[np.generic],
     ) -> OptionalIntBatch:
         values = np.zeros(shape, dtype=dtype)
         present = np.zeros(shape, dtype=np.bool_)
-        for index, row in enumerate(rows):
-            observed: list[int] = []
-            seen: list[bool] = []
-            for ply in row:
-                value = getter(ply)
-                observed.append(0 if value is None else value)
-                seen.append(value is not None)
-            values[index, : lengths[index]] = observed
-            present[index, : lengths[index]] = seen
+        for index, column in enumerate(columns):
+            values[index, : lengths[index]] = [
+                0 if value is None else value for value in column
+            ]
+            present[index, : lengths[index]] = [value is not None for value in column]
         return OptionalIntBatch(values, present)
+
+    def optional(
+        getter: Callable[[PlyEncoding], int | None],
+        dtype: type[np.generic],
+    ) -> OptionalIntBatch:
+        return nullable([[getter(ply) for ply in row] for row in rows], dtype)
 
     piece_ids = np.zeros((*shape, BOARD_SQUARE_COUNT), dtype=np.uint8)
     attention_mask = np.zeros(shape, dtype=np.bool_)
@@ -865,6 +903,7 @@ def _collate_rows(
         ),
         game_ids=required(lambda ply: ply.game_id, np.uint64),
         ply_indices=required(lambda ply: ply.ply_index, np.int16),
+        outcome=nullable(outcomes, np.uint8),
     )
 
 
