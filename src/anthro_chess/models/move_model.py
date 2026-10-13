@@ -605,8 +605,7 @@ class MoveModel(nn.Module):
         if self.value_head is None:
             raise ValueError("this model has no value head")
         squares = self.encode(batch, decisions)
-        black = _at_decision(batch.inputs.side_to_move, decisions).bool()
-        return self.action_head(squares, black), self.value_head(squares)
+        return self._actions(batch, squares, decisions), self.value_head(squares)
 
     def decide_at(self, batch: MoveModelBatch, decisions: Tensor) -> Tensor:
         """Return logits for one named ply per row, shaped batch by vocabulary.
@@ -621,7 +620,13 @@ class MoveModel(nn.Module):
     def decide(self, batch: MoveModelBatch, decisions: Tensor) -> Tensor:
         """Return logits for the named decisions, shaped like their index."""
 
-        squares = self.encode(batch, decisions)
+        return self._actions(batch, self.encode(batch, decisions), decisions)
+
+    def _actions(
+        self, batch: MoveModelBatch, squares: Tensor, decisions: Tensor
+    ) -> Tensor:
+        """Return action logits read from the named decisions' encoded squares."""
+
         black = _at_decision(batch.inputs.side_to_move, decisions).bool()
         return cast(Tensor, self.action_head(squares, black))
 
