@@ -834,16 +834,16 @@ def _collate_rows(
         return values
 
     def nullable(
-        columns: Sequence[Sequence[int | None]],
+        rows_of_values: Sequence[Sequence[int | None]],
         dtype: type[np.generic],
     ) -> OptionalIntBatch:
         values = np.zeros(shape, dtype=dtype)
         present = np.zeros(shape, dtype=np.bool_)
-        for index, column in enumerate(columns):
+        for index, row in enumerate(rows_of_values):
             values[index, : lengths[index]] = [
-                0 if value is None else value for value in column
+                0 if value is None else value for value in row
             ]
-            present[index, : lengths[index]] = [value is not None for value in column]
+            present[index, : lengths[index]] = [value is not None for value in row]
         return OptionalIntBatch(values, present)
 
     def optional(

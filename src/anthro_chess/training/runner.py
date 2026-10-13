@@ -980,23 +980,20 @@ def _optimize(
                 ):
                     with autocast:
                         if value_loss_weight is None:
-                            loss = masked_action_cross_entropy(
-                                trained(batch),
-                                batch.action_targets,
-                                batch.action_loss_mask,
-                            )
-                            objective = loss
+                            action_logits = trained(batch)
                         else:
                             action_logits, outcome_logits = trained(
                                 batch, with_value=True
                             )
-                            loss = masked_action_cross_entropy(
-                                action_logits,
-                                batch.action_targets,
-                                batch.action_loss_mask,
-                            )
+                        loss = masked_action_cross_entropy(
+                            action_logits,
+                            batch.action_targets,
+                            batch.action_loss_mask,
+                        )
+                        objective = loss
+                        if value_loss_weight is not None:
                             objective = (
-                                loss
+                                objective
                                 + value_loss_weight
                                 * masked_outcome_cross_entropy(
                                     outcome_logits,
