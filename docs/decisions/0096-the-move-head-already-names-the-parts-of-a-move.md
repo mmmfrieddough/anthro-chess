@@ -39,7 +39,13 @@ cross-entropy:
 - the destination square, in the mover's frame.
 
 The mean of the four is added to the move loss at weight 1.0, Maia-2's
-coefficient. Terminal actions name no parts. The head held 18,060 parameters,
+coefficient. The coefficient matches but the strength does not. Maia-2 averages
+one binary cross-entropy over a vector of roughly two thousand entries, almost
+all of them the legal-move multi-hot and almost all zero, so each part it
+supervises carries a small share of the gradient. Four categorical
+cross-entropies averaged together are about as large as the move loss itself,
+so this arm applied a much stronger dose than Maia-2 does. Terminal actions name
+no parts. The head held 18,060 parameters,
 and nothing served them. Both arms trained at 0.003, which is what `anthro
 scale` gives at the vehicle's width and horizon, since the head moves neither.
 
@@ -93,9 +99,10 @@ Training throughput fell from 103.8k to 100.9k positions a second.
 
 ## What This Does Not Claim
 
-**A smaller weight is not read.** Nothing above suggests one would help. At
-weight 1.0 the head found nothing the policy did not already carry, and a
-smaller weight only shrinks a term with no gap to fill.
+**A smaller weight is not read, including one at Maia-2's effective
+strength.** Nothing above suggests one would help. At weight 1.0 the head found
+nothing the policy did not already carry, and a smaller weight only shrinks a
+term with no gap to fill.
 
 **The check flag and the legal-move multi-hot are not read.** The first is a
 function of the move and the board that the policy is already scored on, so the
