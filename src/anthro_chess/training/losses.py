@@ -6,6 +6,8 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
+from anthro_chess.models.move_model import IGNORED_COMPONENT, MOVE_COMPONENT_GROUPS
+
 #: What :func:`torch.nn.functional.cross_entropy` drops, and its own default.
 _IGNORE_INDEX = -100
 
@@ -43,3 +45,26 @@ def masked_action_cross_entropy(
         supervised.reshape(-1),
         ignore_index=_IGNORE_INDEX,
     )
+
+
+def move_component_cross_entropy(logits: Tensor, targets: Tensor) -> Tensor:
+    """Average the move-component groups' cross-entropies, each over its moves.
+
+    ``logits`` lays the groups out end to end in the order
+    :data:`MOVE_COMPONENT_GROUPS` gives, and ``targets`` holds one class per
+    group in its last dimension.
+    """
+
+    groups = logits.split(MOVE_COMPONENT_GROUPS, dim=-1)
+    if targets.shape != (*logits.shape[:-1], len(groups)):
+        raise ValueError("move-component logits and targets must align")
+    return torch.stack(
+        [
+            F.cross_entropy(
+                group.reshape(-1, group.shape[-1]),
+                target.reshape(-1),
+                ignore_index=IGNORED_COMPONENT,
+            )
+            for group, target in zip(groups, targets.unbind(-1), strict=True)
+        ]
+    ).mean()

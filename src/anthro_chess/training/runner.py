@@ -103,7 +103,10 @@ from anthro_chess.training.efficiency import (
     execution_record as efficiency_execution_record,
 )
 from anthro_chess.training.health import StepHealth, StepHealthMonitor
-from anthro_chess.training.losses import masked_action_cross_entropy
+from anthro_chess.training.losses import (
+    masked_action_cross_entropy,
+    move_component_cross_entropy,
+)
 from anthro_chess.training.schedule import LearningRateSchedule
 from anthro_chess.training.tensorboard import (
     TENSORBOARD_DIRECTORY,
@@ -973,15 +976,11 @@ def _optimize(
                     else nullcontext()
                 ):
                     with autocast:
-                        loss = masked_action_cross_entropy(
-                            trained(batch),
-                            batch.action_targets,
-                            batch.action_loss_mask,
-                        )
+                        loss, objective = _training_losses(model, trained, batch)
                     # Backward stays outside the autocast scope. Each
                     # operation's backward already runs in the dtype its forward
                     # chose, and nesting it would autocast a second time.
-                    (loss / local_accumulation).backward()
+                    (objective / local_accumulation).backward()
                 if profile_phases:
                     _synchronize_device(device)
                 compute_seconds += time.perf_counter() - compute_started
@@ -1281,6 +1280,31 @@ def _save_step_checkpoint(
         checkpoint=path,
         complete=False,
     )
+
+
+def _training_losses(
+    model: MoveModel,
+    trained: torch.nn.Module,
+    batch: MoveModelBatch,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return the move loss every run reports, and the objective it descends.
+
+    The two differ only by an auxiliary term, which stays out of the reported
+    loss so a run carrying one still reads on the same scale as one without.
+    """
+
+    head = model.move_component_head
+    if head is None:
+        loss = masked_action_cross_entropy(
+            trained(batch), batch.action_targets, batch.action_loss_mask
+        )
+        return loss, loss
+    logits, components = trained(batch, components=True)
+    loss = masked_action_cross_entropy(
+        logits, batch.action_targets, batch.action_loss_mask
+    )
+    auxiliary = move_component_cross_entropy(components, head.targets(batch))
+    return loss, loss + model.config.move_component_weight * auxiliary
 
 
 def _charge_instrumentation(

@@ -625,6 +625,55 @@ def test_a_compiled_run_trains_and_reports_the_graphs_it_built(
     )
 
 
+def test_a_move_component_head_trains_without_entering_the_reported_loss(
+    tmp_path: Path,
+) -> None:
+    """The first step reads the same move loss with and without the head.
+
+    The head is built after everything else, so both arms start from the same
+    weights, and only the objective the step descends differs. History dropout
+    is off because it draws from the generator the head's initialization
+    advanced.
+    """
+
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    records = {}
+    for name, model_extra in (
+        ("plain", "history_dropout = 0.0"),
+        ("head", "history_dropout = 0.0\nmove_component_weight = 1.0"),
+    ):
+        run_training(
+            load_config(
+                TrainingConfig,
+                path=_write_training_config(
+                    tmp_path / f"{name}-config",
+                    normalized=prepared.normalized_path,
+                    manifest=prepared.manifest_path,
+                    run_name=name,
+                    validation=False,
+                    steps=3,
+                    model_extra=model_extra,
+                ),
+            ),
+            output_directory=tmp_path / name,
+        )
+        records[name] = [
+            record["move_loss"]
+            for record in _metric_records(tmp_path / name / "metrics.jsonl")
+        ]
+
+    assert records["head"][0] == pytest.approx(records["plain"][0], rel=1e-6)
+    assert records["head"][1:] != pytest.approx(records["plain"][1:], rel=1e-6)
+    runner = CheckpointModelRunner.load(
+        ModelRunnerConfig(run_path=tmp_path / "head", device="cpu")
+    )
+    assert runner.model.move_component_head is not None
+
+
 def test_resume_reads_execution_provenance_it_does_not_recognize(
     tmp_path: Path,
 ) -> None:

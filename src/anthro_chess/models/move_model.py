@@ -10,7 +10,7 @@ tokens along a geometric bias generated from the position itself. Decisions
 from __future__ import annotations
 
 from functools import cache
-from typing import cast
+from typing import Literal, cast, overload
 
 import chess
 import torch
@@ -59,6 +59,19 @@ _CLOCK_FEATURE_COUNT = 6
 #: Fields a model reading no clock leaves out of its identity, so that it is
 #: still the identity every run recorded before they existed.
 _CLOCK_CONFIG_FIELDS = ("clock_inputs", "clock_dropout")
+_PIECE_TYPE_COUNT = 6
+#: No capture, then every piece type but the king, which is never taken.
+_CAPTURE_CLASS_COUNT = _PIECE_TYPE_COUNT
+#: The move-component head's classes per group, in the order its logits are
+#: laid out: piece moved, piece captured, source square, destination square.
+MOVE_COMPONENT_GROUPS = (
+    _PIECE_TYPE_COUNT,
+    _CAPTURE_CLASS_COUNT,
+    BOARD_SQUARE_COUNT,
+    BOARD_SQUARE_COUNT,
+)
+#: A target the move-component loss skips, which is cross-entropy's own default.
+IGNORED_COMPONENT = -100
 
 
 class RatingEmbedding(nn.Module):
@@ -516,6 +529,67 @@ class SourceDestinationHead(nn.Module):
         return torch.cat((moves, terminals), dim=-1)
 
 
+class MoveComponentHead(nn.Module):
+    """Predict the parts of the played move from the pooled board.
+
+    Training-only: nothing serves these logits. The squares are in the mover's
+    frame, as the trunk sees them, and the pooled board rather than per-square
+    tokens is what is read, so naming the move's squares is something the
+    trunk has to carry in its summary rather than something the action head's
+    geometry already supplies.
+    """
+
+    move_sources: Tensor
+    move_destinations: Tensor
+
+    def __init__(self, config: MoveModelConfig) -> None:
+        super().__init__()
+        self.projection = nn.Linear(config.model_dim, sum(MOVE_COMPONENT_GROUPS))
+        square_slots, _ = _move_index_tables()
+        slots = torch.tensor(square_slots, dtype=torch.long)
+        self.register_buffer(
+            "move_sources", slots // BOARD_SQUARE_COUNT, persistent=False
+        )
+        self.register_buffer(
+            "move_destinations", slots % BOARD_SQUARE_COUNT, persistent=False
+        )
+
+    def forward(self, squares: Tensor) -> Tensor:
+        """Return component logits shaped like the squares' leading dimensions."""
+
+        return cast(Tensor, self.projection(squares.mean(dim=-2)))
+
+    def targets(self, batch: MoveModelBatch) -> Tensor:
+        """Return each decision's four component classes, last dimension last.
+
+        A terminal action or a disabled timestep has no move to take apart, so
+        every group reads :data:`IGNORED_COMPONENT` there.
+        """
+
+        actions = batch.action_targets
+        is_move = batch.action_loss_mask & (actions < MOVE_ACTION_COUNT)
+        actions = torch.where(is_move, actions, 0)
+        sources = self.move_sources[actions]
+        destinations = self.move_destinations[actions]
+        board = batch.inputs.piece_ids
+        moved = (board.gather(-1, sources.unsqueeze(-1)).squeeze(-1) - 1) % (
+            _PIECE_TYPE_COUNT
+        )
+        taken = board.gather(-1, destinations.unsqueeze(-1)).squeeze(-1)
+        captured = torch.where(taken > 0, (taken - 1) % _PIECE_TYPE_COUNT + 1, 0)
+        # A pawn changing file onto an empty square took a pawn en passant.
+        en_passant = (
+            (moved == chess.PAWN - 1) & (taken == 0) & (sources % 8 != destinations % 8)
+        )
+        captured = torch.where(en_passant, chess.PAWN, captured)
+        # Vertical mirroring, the same map as ``chess.SQUARES_180``.
+        flip = torch.where(batch.inputs.side_to_move.bool(), 56, 0)
+        components = torch.stack(
+            (moved, captured, sources ^ flip, destinations ^ flip), dim=-1
+        )
+        return torch.where(is_move.unsqueeze(-1), components, IGNORED_COMPONENT)
+
+
 class MoveModel(nn.Module):
     """Predict human action logits from one decision and the boards behind it."""
 
@@ -542,17 +616,45 @@ class MoveModel(nn.Module):
         # cannot be read without also reading the configuration.
         self.norm = nn.LayerNorm(self.config.model_dim)
         self.action_head = SourceDestinationHead(self.config)
+        self.move_component_head = (
+            MoveComponentHead(self.config)
+            if self.config.move_component_weight > 0.0
+            else None
+        )
 
-    def forward(self, batch: MoveModelBatch) -> Tensor:
+    @overload
+    def forward(
+        self, batch: MoveModelBatch, *, components: Literal[False] = False
+    ) -> Tensor: ...
+
+    @overload
+    def forward(
+        self, batch: MoveModelBatch, *, components: Literal[True]
+    ) -> tuple[Tensor, Tensor]: ...
+
+    def forward(
+        self, batch: MoveModelBatch, *, components: bool = False
+    ) -> Tensor | tuple[Tensor, Tensor]:
         """Return raw action logits shaped batch by sequence by vocabulary.
 
         Every batch is validated by whichever factory built it, so nothing is
         rechecked here. Padded timesteps produce ordinary finite logits that no
         caller reads: the loss ignores them by target, and every scoring path
         gathers by the loss mask before looking.
+
+        ``components`` also returns the move-component head's logits from the
+        same pass, which is how training reaches a head nothing else reads.
         """
 
-        return self.decide(batch, batch.decision_columns)
+        if not components:
+            return self.decide(batch, batch.decision_columns)
+        if self.move_component_head is None:
+            raise ValueError("this model has no move-component head")
+        squares = self.encode(batch, batch.decision_columns)
+        return (
+            self._act(squares, batch, batch.decision_columns),
+            cast(Tensor, self.move_component_head(squares)),
+        )
 
     def decide_at(self, batch: MoveModelBatch, decisions: Tensor) -> Tensor:
         """Return logits for one named ply per row, shaped batch by vocabulary.
@@ -567,9 +669,7 @@ class MoveModel(nn.Module):
     def decide(self, batch: MoveModelBatch, decisions: Tensor) -> Tensor:
         """Return logits for the named decisions, shaped like their index."""
 
-        squares = self.encode(batch, decisions)
-        black = _at_decision(batch.inputs.side_to_move, decisions).bool()
-        return cast(Tensor, self.action_head(squares, black))
+        return self._act(self.encode(batch, decisions), batch, decisions)
 
     def encode(self, batch: MoveModelBatch, decisions: Tensor) -> Tensor:
         """Encode the named decisions' squares, each reading its own history."""
@@ -587,6 +687,10 @@ class MoveModel(nn.Module):
         """Return compatibility metadata for future runs and checkpoints."""
 
         return model_identity(self.config)
+
+    def _act(self, squares: Tensor, batch: MoveModelBatch, decisions: Tensor) -> Tensor:
+        black = _at_decision(batch.inputs.side_to_move, decisions).bool()
+        return cast(Tensor, self.action_head(squares, black))
 
 
 def parameter_count(config: MoveModelConfig) -> int:
@@ -624,10 +728,7 @@ def model_identity(config: MoveModelConfig) -> dict[str, object]:
         # pass, history stacked into the square tokens, and the board flipped to
         # the side to move. No version 6 checkpoint can be read.
         "version": 7,
-        "config": config.model_dump(
-            mode="json",
-            exclude=None if config.clock_inputs else set(_CLOCK_CONFIG_FIELDS),
-        ),
+        "config": config.model_dump(mode="json", exclude=_unread_fields(config)),
         "action_vocabulary": action_vocabulary_identity(),
         "encoding": encoding_identity(),
         "rating_conditioning": "square-token-input-embedding",
@@ -639,6 +740,19 @@ def model_identity(config: MoveModelConfig) -> dict[str, object]:
         "timing_inputs": config.clock_inputs,
         "timing_head": False,
     }
+
+
+def _unread_fields(config: MoveModelConfig) -> set[str]:
+    """Return the fields a model built from ``config`` leaves out of its identity.
+
+    Each is a field added after runs were already recorded, left out whenever
+    its setting builds nothing, so those runs keep the identity they had.
+    """
+
+    unread = set() if config.clock_inputs else set(_CLOCK_CONFIG_FIELDS)
+    if not config.move_component_weight:
+        unread.add("move_component_weight")
+    return unread
 
 
 def _at_decision(values: Tensor, decisions: Tensor) -> Tensor:

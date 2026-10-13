@@ -43,6 +43,10 @@ class MoveModelConfig(ConfigModel):
     #: without the initial one. The corpus presents almost none of these on its
     #: own.
     clock_dropout: float = Field(default=0.05, ge=0.0, le=1.0)
+    #: Weight of a training-only objective over the parts of the played move,
+    #: read off the pooled board: the piece type moved, the piece type
+    #: captured, and the source and destination squares. Zero builds no head.
+    move_component_weight: float = Field(default=0.0, ge=0.0)
 
     @model_validator(mode="after")
     def validate_attention_shape(self) -> MoveModelConfig:

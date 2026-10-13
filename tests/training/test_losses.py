@@ -17,7 +17,9 @@ from anthro_chess.data import (
     encode_game,
 )
 from anthro_chess.models import MoveModelBatch
+from anthro_chess.models.move_model import IGNORED_COMPONENT, MOVE_COMPONENT_GROUPS
 from anthro_chess.training import masked_action_cross_entropy
+from anthro_chess.training.losses import move_component_cross_entropy
 
 
 def test_action_loss_uses_only_explicitly_enabled_targets() -> None:
@@ -155,3 +157,27 @@ def test_the_loss_takes_no_shape_from_the_mask_it_is_given() -> None:
             masked_action_cross_entropy(logits, targets, mask)
 
     assert shapes[0] == shapes[1]
+
+
+def test_component_loss_averages_its_groups_over_the_moves_they_name() -> None:
+    torch.manual_seed(3)
+    logits = torch.randn(1, 2, sum(MOVE_COMPONENT_GROUPS))
+    targets = torch.tensor([[[1, 0, 12, 28], [IGNORED_COMPONENT] * 4]])
+
+    loss = move_component_cross_entropy(logits, targets)
+
+    groups = logits[0, 0].split(MOVE_COMPONENT_GROUPS)
+    expected = torch.stack(
+        [
+            F.cross_entropy(group.unsqueeze(0), torch.tensor([target]))
+            for group, target in zip(groups, (1, 0, 12, 28), strict=True)
+        ]
+    ).mean()
+    torch.testing.assert_close(loss, expected)
+
+
+def test_component_loss_rejects_targets_that_do_not_name_every_group() -> None:
+    logits = torch.zeros(1, 1, sum(MOVE_COMPONENT_GROUPS))
+
+    with pytest.raises(ValueError, match="must align"):
+        move_component_cross_entropy(logits, torch.zeros(1, 1, 3, dtype=torch.long))
