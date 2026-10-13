@@ -59,7 +59,7 @@ _CLOCK_FEATURE_COUNT = 6
 #: Fields a model reading no clock leaves out of its identity, so that it is
 #: still the identity every run recorded before they existed.
 _CLOCK_CONFIG_FIELDS = ("clock_inputs", "clock_dropout")
-_PIECE_TYPE_COUNT = 6
+_PIECE_TYPE_COUNT = (_PIECE_ID_COUNT - 1) // 2
 #: No capture, then every piece type but the king, which is never taken.
 _CAPTURE_CLASS_COUNT = _PIECE_TYPE_COUNT
 #: The move-component head's classes per group, in the order its logits are
