@@ -54,7 +54,7 @@ class StubRunner:
 
 @dataclass
 class ClockRecordingRunner:
-    """Prefer e2e4, then g1f3, then f1c4, and keep each decision's time."""
+    """Keep each decision's time, preferring a fixed handful of moves."""
 
     times: list[DecisionTime] = field(default_factory=list)
 

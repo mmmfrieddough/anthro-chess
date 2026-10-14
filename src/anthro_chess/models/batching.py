@@ -249,9 +249,8 @@ class MoveModelBatch:
             if target_rating is not None:
                 ratings[index, :length] = target_rating
                 rated[index, :length] = True
-            # Placed in the columns a decision's time is read from, which are
-            # the ones a corpus game fills along with every other ply. Fields
-            # are numbered in the order of the four time inputs.
+            # An earlier clock was the side to move's at that ply, so it fills
+            # the player-clock input in that ply's column, as a corpus game does.
             time = contexts[index].time
             for field, plies_back, value in (
                 (0, 0, time.initial_ms),

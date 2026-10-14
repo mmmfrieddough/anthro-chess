@@ -332,6 +332,8 @@ class UciEngine:
             sync = self._session.sync_position(initial_fen=initial_fen, moves=moves)
             board = self._session.board
             if sync.replaced:
+                # A reading for ply p depends only on the first p moves. A new
+                # root keeps none, even the reading for its first ply.
                 kept = (
                     sync.reused_prefix_plies if initial_fen == self._initial_fen else -1
                 )

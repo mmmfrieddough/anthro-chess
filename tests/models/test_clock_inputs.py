@@ -208,7 +208,7 @@ def test_a_served_decision_without_a_clock_presents_its_time_context_as_absent()
 
 
 def _served(time: DecisionTime) -> MoveModelBatch:
-    """Serve the decision after the last of ``_MOVES`` with ``time``."""
+    """Serve the decision that plays the last of ``_MOVES``, with ``time``."""
 
     history = DecisionHistory(moves=[chess.Move.from_uci(text) for text in _MOVES[:-1]])
     return MoveModelBatch.from_decision_context(

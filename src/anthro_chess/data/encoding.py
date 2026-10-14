@@ -287,10 +287,9 @@ def _validate_optional_nonnegative_integer(name: str, value: int | None) -> None
 class DecisionTime:
     """What a served decision knows of the clock, in the mover's frame.
 
-    Each value a clock-reading model reads is either known or absent. Both
-    clocks are held before this move. The two earlier clocks are the
-    side-to-move clocks one and two plies back: the opponent's and the mover's
-    own, each before their last move.
+    The two current clocks are what each player has left before this move. The
+    two earlier clocks are the side-to-move clocks one and two plies back: the
+    opponent's and the mover's own, each before their last move.
     """
 
     initial_ms: int | None = None
