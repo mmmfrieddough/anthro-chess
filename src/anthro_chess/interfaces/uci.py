@@ -387,8 +387,8 @@ class UciEngine:
         if session.is_terminal:
             self._respond(NULL_BESTMOVE, output, infinite=infinite)
             return
-        position_fen = session.board.fen()
         board = session.board
+        position_fen = board.fen()
         time = self._decision_time(_parse_go_clock(arguments, board.turn), board)
         try:
             action = session.choose_action(time)
@@ -428,27 +428,18 @@ class UciEngine:
             self._clock_readings.pop(ply, None)
             return UNTIMED
         self._clock_readings[ply] = reading
-        previous = self._clock_readings.get(ply - 2)
+        previous = self._clock_readings.get(ply - 2, UNTIMED)
         # Counted from the root's fullmove number, so a FEN root partway
         # through a game is not taken for its start.
         root_ply = board.ply() - ply
-        first = next(
-            (
-                self._clock_readings[opening]
-                for opening in (-root_ply, 1 - root_ply)
-                if opening in self._clock_readings
-            ),
-            None,
+        first = self._clock_readings.get(-root_ply) or self._clock_readings.get(
+            1 - root_ply, UNTIMED
         )
         return replace(
             reading,
-            initial_ms=None if first is None else first.player_clock_ms,
-            opponent_clock_before_last_move_ms=(
-                None if previous is None else previous.opponent_clock_ms
-            ),
-            player_clock_before_last_move_ms=(
-                None if previous is None else previous.player_clock_ms
-            ),
+            initial_ms=first.player_clock_ms,
+            opponent_clock_before_last_move_ms=previous.opponent_clock_ms,
+            player_clock_before_last_move_ms=previous.player_clock_ms,
         )
 
     def _respond(self, bestmove: str, output: TextIO, *, infinite: bool) -> None:

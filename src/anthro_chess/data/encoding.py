@@ -278,6 +278,11 @@ class DecisionColumns:
     values: bytes
 
 
+def _validate_optional_nonnegative_integer(name: str, value: int | None) -> None:
+    if value is not None and (type(value) is not int or value < 0):
+        raise ValueError(f"{name} must be a nonnegative integer or None")
+
+
 @dataclass(frozen=True)
 class DecisionTime:
     """What a served decision knows of the clock, in the mover's frame.
@@ -294,6 +299,10 @@ class DecisionTime:
     opponent_clock_ms: int | None = None
     opponent_clock_before_last_move_ms: int | None = None
     player_clock_before_last_move_ms: int | None = None
+
+    def __post_init__(self) -> None:
+        for name, value in vars(self).items():
+            _validate_optional_nonnegative_integer(name, value)
 
 
 #: A decision that knows nothing of the clock.
@@ -319,14 +328,17 @@ class DecisionContext:
             raise ValueError("a decision context needs at least one timestep")
         if self.columns.length != len(self.plies):
             raise ValueError("a decision context's two forms must be the same length")
+        reach = "a decision's earlier clocks reach before its history"
         if (
-            self.time.player_clock_before_last_move_ms is not None
-            and len(self.plies) < 3
-        ) or (
             self.time.opponent_clock_before_last_move_ms is not None
             and len(self.plies) < 2
         ):
-            raise ValueError("a decision's earlier clocks reach before its history")
+            raise ValueError(reach)
+        if (
+            self.time.player_clock_before_last_move_ms is not None
+            and len(self.plies) < 3
+        ):
+            raise ValueError(reach)
 
 
 class RepetitionCounter:
@@ -910,8 +922,3 @@ def _reject_unencodable_move(move: chess.Move, ply_index: int) -> None:
         raise EncodingError(
             f"move history at ply {ply_index} is outside the action vocabulary"
         ) from error
-
-
-def _validate_optional_nonnegative_integer(name: str, value: int | None) -> None:
-    if value is not None and (type(value) is not int or value < 0):
-        raise ValueError(f"{name} must be a nonnegative integer or None")
