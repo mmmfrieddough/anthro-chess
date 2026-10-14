@@ -226,6 +226,10 @@ class MoveModelBatch:
         attention = np.zeros((count, width), dtype=np.bool_)
         ratings = np.zeros((count, width), dtype=np.int64)
         rated = np.zeros((count, width), dtype=np.bool_)
+        # In the order of the time inputs: the initial clock, the increment,
+        # then the mover's and the opponent's clocks.
+        times = np.zeros((4, count, width), dtype=np.int64)
+        timed = np.zeros((4, count, width), dtype=np.bool_)
         for index, history in enumerate(histories):
             length = history.length
             boards[index, :length] = np.frombuffer(
@@ -245,6 +249,20 @@ class MoveModelBatch:
             if target_rating is not None:
                 ratings[index, :length] = target_rating
                 rated[index, :length] = True
+            # Placed in the columns a decision's time is read from, which are
+            # the ones a corpus game fills along with every other ply.
+            time = contexts[index].time
+            for field, plies_back, value in (
+                (0, 0, time.initial_ms),
+                (1, 0, time.increment_ms),
+                (2, 0, time.player_clock_ms),
+                (3, 0, time.opponent_clock_ms),
+                (2, 1, time.opponent_clock_before_last_move_ms),
+                (2, 2, time.player_clock_before_last_move_ms),
+            ):
+                if value is not None:
+                    times[field, index, length - 1 - plies_back] = value
+                    timed[field, index, length - 1 - plies_back] = True
 
         def transferred(values: np.ndarray) -> Tensor:
             return torch.from_numpy(values).to(device=tensor_device)
@@ -257,13 +275,11 @@ class MoveModelBatch:
         def column(name: DecisionColumn) -> Tensor:
             return crossed[name]
 
-        # A live history carries no clock, so every served decision presents
-        # the time context as absent.
-        def absent() -> OptionalTensor:
-            return OptionalTensor(
-                torch.zeros((count, width), dtype=torch.long, device=tensor_device),
-                torch.zeros((count, width), dtype=torch.bool, device=tensor_device),
-            )
+        crossed_times = transferred(times)
+        crossed_timed = transferred(timed)
+
+        def time_input(field: int) -> OptionalTensor:
+            return OptionalTensor(crossed_times[field], crossed_timed[field])
 
         result = cls(
             inputs=MoveModelInputs(
@@ -278,10 +294,10 @@ class MoveModelBatch:
                     transferred(ratings),
                     transferred(rated),
                 ),
-                time_initial_ms=absent(),
-                time_increment_ms=absent(),
-                player_clock_ms=absent(),
-                opponent_clock_ms=absent(),
+                time_initial_ms=time_input(0),
+                time_increment_ms=time_input(1),
+                player_clock_ms=time_input(2),
+                opponent_clock_ms=time_input(3),
             ),
             action_targets=torch.zeros(
                 (count, width), dtype=torch.long, device=tensor_device

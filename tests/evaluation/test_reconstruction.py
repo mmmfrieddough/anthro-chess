@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import chess
 import pytest
@@ -10,7 +10,7 @@ import torch
 
 from anthro_chess.application_logging import configure_application_logging
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE, encode_move
-from anthro_chess.data import DecisionContext
+from anthro_chess.data import UNTIMED, DecisionContext, DecisionTime
 from anthro_chess.evaluation.decisions import (
     score_played_decisions,
     summarize_decisions,
@@ -45,6 +45,15 @@ class TrajectoryRunner:
     def predict(self, context: DecisionContext) -> torch.Tensor:
         generator = torch.Generator().manual_seed(len(context.plies))
         return torch.randn(ACTION_VOCABULARY_SIZE, generator=generator)
+
+
+@dataclass
+class TimeRecordingRunner:
+    times: list[DecisionTime] = field(default_factory=list)
+
+    def predict(self, context: DecisionContext) -> torch.Tensor:
+        self.times.append(context.time)
+        return torch.zeros(ACTION_VOCABULARY_SIZE)
 
 
 def _play(transcript: str, *, preferred: str = "g1f3", seed: int = 123) -> str:
@@ -276,3 +285,47 @@ def test_a_reconstructed_session_decomposes_through_the_shared_layer() -> None:
     assert decomposition.reference_cell().setting is not None
     assert 1.0 <= decomposition.overall.selected_rank <= 40.0
     assert [sample.ply_index for sample in decomposition.samples] == [2, 4]
+
+
+def test_a_clocked_decision_is_rescored_with_the_clock_it_was_served_with() -> None:
+    log = _play(
+        "\n".join(
+            (
+                "debug on",
+                "position startpos moves e2e4 e7e5",
+                "go wtime 59000 btime 58000 winc 1000 binc 1000",
+                "position startpos moves e2e4 e7e5 g1f3 b8c6",
+                "go wtime 57000 btime 56000 winc 1000 binc 1000",
+                "quit",
+            )
+        )
+    )
+    decisions = reconstruct_uci_games(log.splitlines())[0].decisions
+    runner = TimeRecordingRunner()
+
+    score_played_decisions(runner, decisions)
+
+    assert runner.times == [decision.time for decision in decisions]
+    assert decisions[1].time == DecisionTime(
+        increment_ms=1_000,
+        player_clock_ms=57_000,
+        opponent_clock_ms=56_000,
+        opponent_clock_before_last_move_ms=58_000,
+        player_clock_before_last_move_ms=59_000,
+    )
+
+
+def test_a_decision_logged_before_the_clock_was_read_is_rescored_untimed() -> None:
+    log = "\n".join(
+        (
+            _event(event="position", initial_fen=chess.STARTING_FEN, moves=[]),
+            _event(
+                event="decision",
+                action_id=encode_move(chess.Move.from_uci("e2e4")),
+                move="e2e4",
+                runtime=_runtime(),
+            ),
+        )
+    )
+
+    assert reconstruct_uci_games(log.splitlines())[0].decisions[0].time == UNTIMED

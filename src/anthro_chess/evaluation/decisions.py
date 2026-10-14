@@ -32,6 +32,7 @@ from typing import Any
 import chess
 
 from anthro_chess.config import ConfigModel
+from anthro_chess.data import UNTIMED, DecisionTime
 from anthro_chess.evaluation.games.records import (
     DecisionPolicy,
     GameRecord,
@@ -387,6 +388,7 @@ class PlayedDecision:
     history: tuple[chess.Move, ...]
     action_id: int
     config: RuntimeConfig
+    time: DecisionTime = UNTIMED
 
     @property
     def setting(self) -> DecisionSetting:
@@ -426,7 +428,7 @@ def score_played_decisions(
                 initial_fen=decision.initial_fen,
                 moves=decision.history,
             )
-            policy = session.score_action(decision.action_id)
+            policy = session.score_action(decision.action_id, decision.time)
         except DecisionRuntimeError as error:
             raise DecisionDecompositionError(
                 f"cannot score {decision.game_id} at ply {decision.ply_index}: {error}"

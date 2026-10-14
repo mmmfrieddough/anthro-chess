@@ -901,14 +901,15 @@ The runtime must:
 - expose configuration for target rating, temperature, optional preferences, and
   optional clock settings.
 
-The current `anthro_chess.runtime` implementation provides the untimed core of
-this boundary. A game session owns exact board state and full move history,
-accepts observed legal moves from either player, applies Anthro's target rating
-only to its current decision context, masks and samples model-runner logits,
-and updates the game with the selected valid action. Strict code-owned settings
-define rating, temperature, the random-seed policy, and whether each terminal
-action is enabled. Timing and preference settings remain future additions
-rather than placeholder inputs or fabricated clock values.
+The current `anthro_chess.runtime` implementation provides the core of this
+boundary. A game session owns exact board state and full move history, accepts
+observed legal moves from either player, applies Anthro's target rating and
+whatever its caller knows of the clock only to its current decision context,
+masks and samples model-runner logits, and updates the game with the selected
+valid action. Strict code-owned settings define rating, temperature, the
+random-seed policy, and whether each terminal action is enabled. Spending the
+clock and preference settings remain future additions rather than placeholder
+inputs or fabricated clock values.
 
 A session can also score an enabled action without deciding anything, leaving the
 board and the random stream untouched. That is one call rather than a second

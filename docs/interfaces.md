@@ -11,10 +11,12 @@ sampled move time.
 Outside interfaces should translate between their protocol and that runtime
 API.
 
-The current `anthro_chess.runtime.GameSession` is the implemented untimed
-boundary. It accepts typed chess moves and model-runner outputs, not protocol
-text, and returns typed move or resignation actions after updating its owned
-game state. The installed `anthro-uci` process is the first implemented
+The current `anthro_chess.runtime.GameSession` is the implemented boundary. It
+accepts typed chess moves, model-runner outputs, and what the caller knows of
+the clock at each decision, not protocol text, and returns typed move or
+resignation actions after updating its owned game state. The session keeps no
+clock of its own: what a frontend can know of one, and when, belongs to its
+protocol. The installed `anthro-uci` process is the first implemented
 frontend over that boundary.
 
 ## UCI
@@ -120,10 +122,25 @@ Withholding the settings that produced a game while recording the seed that
 replays it is not a coherent boundary. A future option carrying free-form text
 would change that judgment and should be excluded when it is introduced.
 
-This first path is untimed and move-only. It ignores unsupported `go` fields
-rather than treating them as model inputs. `searchmoves`, pondering, clock
-fields, `movetime`, depth/node/mate limits, asynchronous cancellation, and
-portable non-move game actions remain outside the implemented scope.
+This first path is move-only. It reads the clock `go` sends but does not spend
+it: every move is answered as fast as the model runs. `searchmoves`, pondering,
+`movetime`, depth/node/mate limits, asynchronous cancellation, and portable
+non-move game actions remain outside the implemented scope, and those fields are
+ignored rather than treated as model inputs.
+
+A `go` carrying both `wtime` and `btime` gives the decision both clocks before
+the move, and the mover's increment, which is zero when UCI omits it. Neither
+clock runs during the other player's move, so a clocked `go` two plies earlier
+in the same history gives both players' clocks before their last moves exactly,
+and the model differences those into the two last move times. UCI never states
+the initial clock, so it is taken as the mover's own clock at a clocked `go` for
+ply 0 or 1, and stays absent for an engine that joined later. Anything else is
+presented as absent, which the model was trained on. A `go` without both clocks
+is served untimed, and a clock below zero is read as run out. `ucinewgame` and
+any `position` that is not an append-only update discard the recorded clocks
+along with the history they were read against. Each decision event in the debug
+log records the time context it was served with, so re-scoring a logged game
+reads the clock the engine read.
 
 `go infinite` is honored to the extent the protocol requires: the move is still
 chosen synchronously, but the response is withheld until `stop` rather than

@@ -279,6 +279,28 @@ class DecisionColumns:
 
 
 @dataclass(frozen=True)
+class DecisionTime:
+    """What a served decision knows of the clock, in the mover's frame.
+
+    Each value a clock-reading model reads is either known or absent. Both
+    clocks are held before this move. The two earlier clocks are the
+    side-to-move clocks one and two plies back: the opponent's and the mover's
+    own, each before their last move.
+    """
+
+    initial_ms: int | None = None
+    increment_ms: int | None = None
+    player_clock_ms: int | None = None
+    opponent_clock_ms: int | None = None
+    opponent_clock_before_last_move_ms: int | None = None
+    player_clock_before_last_move_ms: int | None = None
+
+
+#: A decision that knows nothing of the clock.
+UNTIMED = DecisionTime()
+
+
+@dataclass(frozen=True)
 class DecisionContext:
     """A complete target-free trajectory ending at the current decision.
 
@@ -290,12 +312,21 @@ class DecisionContext:
     target_rating: int | None
     plies: tuple[PlyContext, ...]
     columns: DecisionColumns
+    time: DecisionTime = UNTIMED
 
     def __post_init__(self) -> None:
         if not self.plies:
             raise ValueError("a decision context needs at least one timestep")
         if self.columns.length != len(self.plies):
             raise ValueError("a decision context's two forms must be the same length")
+        if (
+            self.time.player_clock_before_last_move_ms is not None
+            and len(self.plies) < 3
+        ) or (
+            self.time.opponent_clock_before_last_move_ms is not None
+            and len(self.plies) < 2
+        ):
+            raise ValueError("a decision's earlier clocks reach before its history")
 
 
 class RepetitionCounter:
@@ -648,7 +679,12 @@ class DecisionHistory:
         self._moves = target
         return reused
 
-    def context(self, *, target_rating: int | None) -> DecisionContext:
+    def context(
+        self,
+        *,
+        target_rating: int | None,
+        time: DecisionTime = UNTIMED,
+    ) -> DecisionContext:
         """Return the full target-free context for the current position."""
 
         _validate_optional_nonnegative_integer("target_rating", target_rating)
@@ -656,6 +692,7 @@ class DecisionHistory:
             target_rating,
             self._prefix.plies,
             self._prefix.columns(),
+            time,
         )
 
     def _resume_at(self, reused: int) -> tuple[chess.Board, _EncodedPrefix]:
