@@ -253,8 +253,10 @@ before the move, and the time each player spent on their last move, all in the
 mover's frame, and the result is added to every square token beside the rating.
 Every value travels with a presence flag, so an unknown clock is an absence
 rather than a zero, and training hides each partial context a decision can be
-served with on a share of decisions, so that absence is a trained input. A live game carries no clock yet,
-so a clock-reading model is served as untimed. Where these enter, and why the
+served with on a share of decisions, so that absence is a trained input. A
+served decision carries whatever of this its frontend knows, and everything else
+is absent; `docs/interfaces.md` says what the UCI adapter reads from `go`. Where
+these enter, and why the
 move times are differenced inside the model rather than encoded, is
 `docs/decisions/0095-the-clock-enters-beside-the-rating-and-absence-is-trained.md`.
 

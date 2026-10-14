@@ -14,6 +14,7 @@ from torch import nn
 from anthro_chess.chess import encode_move
 from anthro_chess.data import (
     DecisionHistory,
+    DecisionTime,
     GameEncodingInput,
     SequenceBatch,
     SequenceExample,
@@ -189,7 +190,9 @@ def test_training_draws_every_partial_context_a_decision_can_be_served_with() ->
     }
 
 
-def test_a_served_decision_presents_its_time_context_as_absent() -> None:
+def test_a_served_decision_without_a_clock_presents_its_time_context_as_absent() -> (
+    None
+):
     history = DecisionHistory(moves=[chess.Move.from_uci(text) for text in _MOVES])
 
     batch = MoveModelBatch.from_decision_context(history.context(target_rating=1500))
@@ -202,6 +205,53 @@ def test_a_served_decision_presents_its_time_context_as_absent() -> None:
         inputs.opponent_clock_ms,
     ):
         assert not value.present.any()
+
+
+def _served(time: DecisionTime) -> MoveModelBatch:
+    """Serve the decision that plays the last of ``_MOVES``, with ``time``."""
+
+    history = DecisionHistory(moves=[chess.Move.from_uci(text) for text in _MOVES[:-1]])
+    return MoveModelBatch.from_decision_context(
+        history.context(target_rating=1500, time=time)
+    )
+
+
+def test_a_served_decision_reads_its_clock_as_the_same_decision_in_training() -> None:
+    model = MoveModel(_config()).eval()
+    # The fourth decision of the training game, as a frontend would know it.
+    served = _served(
+        DecisionTime(
+            initial_ms=_INITIAL_MS,
+            increment_ms=_INCREMENT_MS,
+            player_clock_ms=58_000,
+            opponent_clock_ms=56_000,
+            opponent_clock_before_last_move_ms=59_000,
+            player_clock_before_last_move_ms=60_000,
+        )
+    )
+
+    features = _read_features(model, served)[0, -1]
+
+    assert torch.equal(features, _read_features(model, _batch())[0, -1])
+
+
+def test_a_partly_known_served_time_presents_exactly_the_known_fields() -> None:
+    model = MoveModel(_config()).eval()
+    served = _served(
+        DecisionTime(increment_ms=0, player_clock_ms=58_000, opponent_clock_ms=56_000)
+    )
+
+    features = _read_features(model, served)[0, -1]
+
+    assert features[6:].tolist() == [0, 1, 1, 1, 0, 0]
+
+
+def test_a_served_earlier_clock_cannot_reach_before_the_history() -> None:
+    with pytest.raises(ValueError, match="before its history"):
+        DecisionHistory().context(
+            target_rating=None,
+            time=DecisionTime(opponent_clock_before_last_move_ms=1_000),
+        )
 
 
 def test_a_model_reading_no_clock_keeps_the_identity_recorded_before_clocks() -> None:

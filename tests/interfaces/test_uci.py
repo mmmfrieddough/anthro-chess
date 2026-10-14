@@ -8,7 +8,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +30,12 @@ from anthro_chess.chess import (
     action_vocabulary_identity,
     encode_move,
 )
-from anthro_chess.data import DecisionContext, encoding_identity
+from anthro_chess.data import (
+    UNTIMED,
+    DecisionContext,
+    DecisionTime,
+    encoding_identity,
+)
 from anthro_chess.interfaces.config import UCI_MAX_RATING, UciConfig
 from anthro_chess.interfaces.uci import UciEngine
 from anthro_chess.models import MoveModel
@@ -45,6 +50,20 @@ class StubRunner:
 
     def predict(self, _context: DecisionContext) -> torch.Tensor:
         return self.logits.clone()
+
+
+@dataclass
+class ClockRecordingRunner:
+    """Keep each decision's time, preferring a fixed handful of moves."""
+
+    times: list[DecisionTime] = field(default_factory=list)
+
+    def predict(self, context: DecisionContext) -> torch.Tensor:
+        self.times.append(context.time)
+        logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+        for rank, move in enumerate(("e2e4", "g1f3", "f1c4", "e7e5")):
+            logits[encode_move(chess.Move.from_uci(move))] = 10.0 - rank
+        return logits
 
 
 class FailingRunner:
@@ -1011,6 +1030,180 @@ def test_color_switch_within_one_game_never_draws_a_new_stream(
     # One process served both colors of one game on one runner and one stream.
     assert len(played) == 4
     assert loads() == 1
+
+
+_CLOCKED_OPENING = (
+    "position startpos",
+    "go wtime 60000 btime 60000 winc 1000 binc 1000",
+    "position startpos moves e2e4 e7e5",
+    "go wtime 59500 btime 57000 winc 1000 binc 1000",
+)
+
+
+def test_each_go_supplies_the_clocks_and_the_go_two_plies_back_the_rest() -> None:
+    times = _served_times(
+        *_CLOCKED_OPENING,
+        "position startpos moves e2e4 e7e5 g1f3 b8c6",
+        "go wtime 58000 btime 55000 winc 1000 binc 1000",
+    )
+
+    assert times == [
+        DecisionTime(
+            initial_ms=60_000,
+            increment_ms=1_000,
+            player_clock_ms=60_000,
+            opponent_clock_ms=60_000,
+        ),
+        DecisionTime(
+            initial_ms=60_000,
+            increment_ms=1_000,
+            player_clock_ms=59_500,
+            opponent_clock_ms=57_000,
+            opponent_clock_before_last_move_ms=60_000,
+            player_clock_before_last_move_ms=60_000,
+        ),
+        DecisionTime(
+            initial_ms=60_000,
+            increment_ms=1_000,
+            player_clock_ms=58_000,
+            opponent_clock_ms=55_000,
+            opponent_clock_before_last_move_ms=57_000,
+            player_clock_before_last_move_ms=59_500,
+        ),
+    ]
+
+
+def test_black_reads_its_own_clock_and_an_omitted_increment_as_zero() -> None:
+    times = _served_times("position startpos moves e2e4", "go wtime 59000 btime 60000")
+
+    assert times == [
+        DecisionTime(
+            initial_ms=60_000,
+            increment_ms=0,
+            player_clock_ms=60_000,
+            opponent_clock_ms=59_000,
+        )
+    ]
+
+
+def test_a_first_go_partway_through_a_game_never_learns_the_initial_clock() -> None:
+    times = _served_times(
+        "position startpos moves e2e4 e7e5",
+        "go wtime 50000 btime 40000 winc 1000 binc 1000",
+        "position startpos moves e2e4 e7e5 g1f3 b8c6",
+        "go wtime 48000 btime 39000 winc 1000 binc 1000",
+    )
+
+    assert [time.initial_ms for time in times] == [None, None]
+    assert times[0].opponent_clock_before_last_move_ms is None
+    assert times[0].player_clock_before_last_move_ms is None
+    assert times[1].opponent_clock_before_last_move_ms == 40_000
+    assert times[1].player_clock_before_last_move_ms == 50_000
+
+
+def test_a_takeback_keeps_the_clocks_of_the_history_it_keeps() -> None:
+    # The engine played g1f3 and then f1c4; the GUI takes both back and the
+    # game continues down another line to the engine's next decision.
+    times = _served_times(
+        *_CLOCKED_OPENING,
+        "position startpos moves e2e4 e7e5 g1f3 b8c6",
+        "go wtime 58000 btime 55000 winc 1000 binc 1000",
+        "position startpos moves e2e4 e7e5 d2d4 d7d5 g1f3 b8c6",
+        "go wtime 57000 btime 54000 winc 1000 binc 1000",
+    )
+
+    assert times[-1].initial_ms == 60_000
+    assert times[-1].opponent_clock_before_last_move_ms is None
+    assert times[-1].player_clock_before_last_move_ms is None
+
+
+def test_a_new_game_discards_the_recorded_clocks() -> None:
+    times = _served_times(
+        *_CLOCKED_OPENING,
+        "ucinewgame",
+        "position startpos moves e2e4 e7e5",
+        "go wtime 59000 btime 56000 winc 1000 binc 1000",
+    )
+
+    assert times[-1] == DecisionTime(
+        increment_ms=1_000,
+        player_clock_ms=59_000,
+        opponent_clock_ms=56_000,
+    )
+
+
+def test_a_fen_root_partway_through_a_game_is_not_its_start() -> None:
+    board = chess.Board()
+    board.push_uci("e2e4")
+    board.push_uci("e7e5")
+
+    times = _served_times(f"position fen {board.fen()}", "go wtime 12000 btime 9000")
+
+    assert times[0].initial_ms is None
+    assert times[0].player_clock_ms == 12_000
+
+
+@pytest.mark.parametrize(
+    "go",
+    (
+        "go",
+        "go movetime 1000",
+        "go infinite\nstop",
+        "go wtime 1000",
+        "go wtime x btime 1",
+    ),
+)
+def test_a_go_without_both_clocks_is_served_untimed_and_breaks_the_chain(
+    go: str,
+) -> None:
+    times = _served_times(
+        "position startpos",
+        go,
+        "position startpos moves e2e4 e7e5",
+        "go wtime 59500 btime 57000",
+    )
+
+    assert times[0] == UNTIMED
+    assert times[1].initial_ms is None
+    assert times[1].player_clock_before_last_move_ms is None
+
+
+def test_a_clock_below_zero_is_read_as_run_out() -> None:
+    times = _served_times("position startpos", "go wtime -30 btime 1000")
+
+    assert times[0].player_clock_ms == 0
+
+
+def test_a_decision_event_records_the_time_it_was_served_with() -> None:
+    runner = ClockRecordingRunner()
+    engine = UciEngine(
+        lambda: runner, UciConfig(runtime=RuntimeConfig(temperature=0.0))
+    )
+    error = io.StringIO()
+    configure_application_logging(level="WARNING", stream=error)
+
+    _drive(engine, "\n".join(("debug on", *_CLOCKED_OPENING, "quit")), error)
+
+    decisions = [
+        event
+        for event in _game_events(error.getvalue())
+        if event["event"] == "decision"
+    ]
+    assert [event["time"] for event in decisions] == [
+        asdict(time) for time in runner.times
+    ]
+
+
+def _served_times(*commands: str) -> list[DecisionTime]:
+    """Drive one engine through ``commands`` and return each decision's time."""
+
+    runner = ClockRecordingRunner()
+    engine = UciEngine(
+        lambda: runner, UciConfig(runtime=RuntimeConfig(temperature=0.0))
+    )
+    output, _ = _run(engine, "\n".join((*commands, "quit")))
+    assert len(_bestmoves(output)) == len(runner.times)
+    return runner.times
 
 
 def _run(engine: UciEngine, transcript: str) -> tuple[str, str]:

@@ -19,7 +19,13 @@ from anthro_chess.chess import (
     decode_move,
     legal_action_ids,
 )
-from anthro_chess.data import DecisionContext, DecisionHistory, EncodingError
+from anthro_chess.data import (
+    UNTIMED,
+    DecisionContext,
+    DecisionHistory,
+    DecisionTime,
+    EncodingError,
+)
 from anthro_chess.runtime.config import RuntimeConfig
 
 logger = logging.getLogger(__name__)
@@ -360,29 +366,38 @@ class GameSession:
             )
         self._history.push(move)
 
-    def choose_action(self) -> GameAction:
+    def choose_action(self, time: DecisionTime = UNTIMED) -> GameAction:
         """Select, apply, and return one valid action for the player to move."""
 
-        return self.decide().action
+        return self.decide(time).action
 
-    def decide(self) -> ActionDecision:
+    def decide(self, time: DecisionTime = UNTIMED) -> ActionDecision:
         """Select and apply one action, reporting the policy behind it."""
 
-        return self.decide_from_logits(self._runner.predict(self.decision_context()))
+        return self.decide_from_logits(
+            self._runner.predict(self.decision_context(time))
+        )
 
-    def decision_context(self) -> DecisionContext:
+    def decision_context(self, time: DecisionTime = UNTIMED) -> DecisionContext:
         """Return the encoded trajectory the next decision is made from.
 
         Public so a caller holding several games at once can collect their
         pending contexts, run one batched forward pass, and hand each result
         back to :meth:`decide_from_logits`. Splitting the decision in two is
         the only way to batch across games without a second selection path.
+
+        ``time`` is what the caller knows of the clock at this decision. The
+        session keeps no clock, because what a frontend can know of one and
+        when it learns it is a property of its protocol.
         """
 
         if self.is_terminal:
             raise SessionStateError("cannot choose an action in a terminal game")
         try:
-            return self._history.context(target_rating=self.config.target_rating)
+            return self._history.context(
+                target_rating=self.config.target_rating,
+                time=time,
+            )
         except EncodingError as error:
             raise SessionStateError(
                 f"cannot build decision context: {error}"
@@ -421,7 +436,11 @@ class GameSession:
             policy=policy,
         )
 
-    def score_action(self, action_id: int) -> SelectionPolicy:
+    def score_action(
+        self,
+        action_id: int,
+        time: DecisionTime = UNTIMED,
+    ) -> SelectionPolicy:
         """Describe what the policy says about one enabled action right now.
 
         Reads the model without deciding anything: the board is unchanged and
@@ -435,7 +454,7 @@ class GameSession:
         if type(action_id) is not int:
             raise TypeError("action id must be an int")
         logits, enabled_ids = self._policy_inputs(
-            self._runner.predict(self.decision_context())
+            self._runner.predict(self.decision_context(time))
         )
         try:
             candidate_index = enabled_ids.index(action_id)

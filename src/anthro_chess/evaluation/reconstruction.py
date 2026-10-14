@@ -29,6 +29,7 @@ from typing import Any
 
 import chess
 
+from anthro_chess.data import UNTIMED, DecisionTime
 from anthro_chess.evaluation.decisions import (
     DecisionDecomposition,
     DecisionDecompositionError,
@@ -250,6 +251,7 @@ class _GameState:
                 history=self._moves,
                 action_id=action_id,
                 config=_runtime_config(event.payload),
+                time=_decision_time(event.payload),
             )
         )
         self._moves = (*self._moves, move)
@@ -295,6 +297,26 @@ def _runtime_config(payload: dict[str, Any]) -> RuntimeConfig:
     except ValueError as error:
         raise ReconstructionError(
             f"a decision event records unusable runtime settings: {error}"
+        ) from error
+
+
+def _decision_time(payload: dict[str, Any]) -> DecisionTime:
+    """Return the time context a logged decision was made with.
+
+    A log written before the adapter read the clock records none, and every
+    decision in it was served untimed.
+    """
+
+    recorded = payload.get("time")
+    if recorded is None:
+        return UNTIMED
+    if not isinstance(recorded, dict):
+        raise ReconstructionError("a decision event records an unreadable time")
+    try:
+        return DecisionTime(**recorded)
+    except (TypeError, ValueError) as error:
+        raise ReconstructionError(
+            f"a decision event records an unreadable time: {error}"
         ) from error
 
 

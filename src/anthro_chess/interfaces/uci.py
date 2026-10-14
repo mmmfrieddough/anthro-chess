@@ -9,6 +9,7 @@ import logging
 import sys
 import uuid
 from collections.abc import Callable, Sequence
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import TextIO
 
@@ -24,6 +25,7 @@ from anthro_chess.application_logging import (
     default_uci_log_path,
 )
 from anthro_chess.config import ConfigError, load_config
+from anthro_chess.data import UNTIMED, DecisionTime
 from anthro_chess.inference import CheckpointModelRunner
 from anthro_chess.interfaces.config import (
     UCI_MAX_RATING,
@@ -109,6 +111,8 @@ class UciEngine:
         self._moves: tuple[chess.Move, ...] = ()
         self._board = chess.Board()
         self._session: GameSession | None = None
+        # Each clocked ``go`` of the current history, by the ply it was for.
+        self._clock_readings: dict[int, DecisionTime] = {}
         # ``go infinite`` must not answer until ``stop``, so the synchronously
         # computed response waits here instead of being sent immediately.
         self._pending_bestmove: str | None = None
@@ -312,6 +316,7 @@ class UciEngine:
         self._initial_fen = chess.STARTING_FEN
         self._moves = ()
         self._board = chess.Board()
+        self._clock_readings.clear()
         if self._session is not None:
             self._session.reset()
         self._log_game_event("new-game", runtime=self._runtime_log_record())
@@ -326,6 +331,17 @@ class UciEngine:
         if self._session is not None:
             sync = self._session.sync_position(initial_fen=initial_fen, moves=moves)
             board = self._session.board
+            if sync.replaced:
+                # A reading for ply p depends only on the first p moves. A new
+                # root keeps none, even the reading for its first ply.
+                kept = (
+                    sync.reused_prefix_plies if initial_fen == self._initial_fen else -1
+                )
+                self._clock_readings = {
+                    ply: reading
+                    for ply, reading in self._clock_readings.items()
+                    if ply <= kept
+                }
         else:
             board = _validated_board(initial_fen, moves)
         self._initial_fen = initial_fen
@@ -373,9 +389,11 @@ class UciEngine:
         if session.is_terminal:
             self._respond(NULL_BESTMOVE, output, infinite=infinite)
             return
-        position_fen = session.board.fen()
+        board = session.board
+        position_fen = board.fen()
+        time = self._decision_time(_parse_go_clock(arguments, board.turn), board)
         try:
-            action = session.choose_action()
+            action = session.choose_action(time)
         except Exception as error:
             raise UciInferenceError(f"move generation failed: {error}") from error
         if not isinstance(action, MoveAction):
@@ -390,10 +408,41 @@ class UciEngine:
             observed_plies=len(self._moves),
             position_fen=position_fen,
             runtime=self._runtime_log_record(),
+            time=asdict(time),
         )
         self._moves += (action.move,)
         self._board = session.board
         self._respond(action.move.uci(), output, infinite=infinite)
+
+    def _decision_time(
+        self, reading: DecisionTime | None, board: chess.Board
+    ) -> DecisionTime:
+        """Return what this ``go`` and the ones before it say of the clock.
+
+        Neither clock runs during the other player's move, so a reading two
+        plies back of the same history gives both clocks before each player's
+        last move. UCI never states the initial clock; the mover's own clock in
+        the game's first two plies is it.
+        """
+
+        ply = len(self._moves)
+        if reading is None:
+            self._clock_readings.pop(ply, None)
+            return UNTIMED
+        self._clock_readings[ply] = reading
+        previous = self._clock_readings.get(ply - 2, UNTIMED)
+        # Counted from the root's fullmove number, so a FEN root partway
+        # through a game is not taken for its start.
+        root_ply = board.ply() - ply
+        first = self._clock_readings.get(-root_ply) or self._clock_readings.get(
+            1 - root_ply, UNTIMED
+        )
+        return replace(
+            reading,
+            initial_ms=first.player_clock_ms,
+            opponent_clock_before_last_move_ms=previous.opponent_clock_ms,
+            player_clock_before_last_move_ms=previous.player_clock_ms,
+        )
 
     def _respond(self, bestmove: str, output: TextIO, *, infinite: bool) -> None:
         if infinite:
@@ -561,6 +610,34 @@ def _parse_position(arguments: str) -> tuple[str, tuple[chess.Move, ...]]:
                 f"malformed position move at ply {ply_index}: {token}"
             ) from error
     return initial_fen, tuple(moves)
+
+
+def _parse_go_clock(arguments: str, mover: chess.Color) -> DecisionTime | None:
+    """Return a ``go``'s clocks in the mover's frame, or ``None`` without both.
+
+    A malformed clock is read as no clock rather than rejected, because
+    rejecting ``go`` would leave the GUI waiting for a move. A clock below zero
+    is one that has run out.
+    """
+
+    tokens = [token.lower() for token in arguments.split()]
+    fields: dict[str, int] = {}
+    for name, value in zip(tokens, tokens[1:], strict=False):
+        if name in {"wtime", "btime", "winc", "binc"}:
+            try:
+                fields[name] = max(0, int(value))
+            except ValueError:
+                logger.warning("Ignored the clock of a go with malformed %s", name)
+                return None
+    if "wtime" not in fields or "btime" not in fields:
+        return None
+    white = mover == chess.WHITE
+    return DecisionTime(
+        # UCI omits an increment that is zero.
+        increment_ms=fields.get("winc" if white else "binc", 0),
+        player_clock_ms=fields["wtime" if white else "btime"],
+        opponent_clock_ms=fields["btime" if white else "wtime"],
+    )
 
 
 def _parse_option(arguments: str) -> tuple[str, str]:
