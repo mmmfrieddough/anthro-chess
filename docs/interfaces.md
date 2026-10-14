@@ -131,16 +131,17 @@ ignored rather than treated as model inputs.
 A `go` carrying both `wtime` and `btime` gives the decision both clocks before
 the move, and the mover's increment, which is zero when UCI omits it. Neither
 clock runs during the other player's move, so a clocked `go` two plies earlier
-in the same history gives both players' clocks before their last moves exactly,
-and the model differences those into the two last move times. UCI never states
-the initial clock, so it is taken as the mover's own clock at a clocked `go` for
-ply 0 or 1, and stays absent for an engine that joined later. Anything else is
-presented as absent, which the model was trained on. A `go` without both clocks
-is served untimed, and a clock below zero is read as run out. `ucinewgame` and
-any `position` that is not an append-only update discard the recorded clocks
-along with the history they were read against. Each decision event in the debug
-log records the time context it was served with, so re-scoring a logged game
-reads the clock the engine read.
+in the same history gives both players' clocks before their last moves as the
+GUI reported them, and the model differences those into the two last move
+times. UCI never states the initial clock, so it is taken as the mover's own
+clock at a clocked `go` in the game's first two plies, counted from the root's
+fullmove number, and stays absent for an engine that joined later. Anything else
+is presented as absent, which the model was trained on. A `go` without both
+clocks is served untimed, and a clock below zero is read as run out.
+`ucinewgame` and a new root discard the recorded clocks; a takeback or a
+divergent move list discards those read past the history it keeps. Each
+decision event in the debug log records the time context it was served with, so
+re-scoring a logged game reads the clock the engine read.
 
 `go infinite` is honored to the extent the protocol requires: the move is still
 chosen synchronously, but the response is withheld until `stop` rather than

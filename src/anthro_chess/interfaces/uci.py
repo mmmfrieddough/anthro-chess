@@ -9,7 +9,7 @@ import logging
 import sys
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import TextIO
 
@@ -84,24 +84,6 @@ class UciInferenceError(RuntimeError):
     """Raised when an initialized model cannot produce a move."""
 
 
-@dataclass(frozen=True)
-class _GoClock:
-    """The clock fields of one ``go``, by colour."""
-
-    white_ms: int
-    black_ms: int
-    white_increment_ms: int
-    black_increment_ms: int
-
-
-@dataclass(frozen=True)
-class _ClockReading:
-    """Both clocks at one ``go``, in the frame of the side it asked to move."""
-
-    player_ms: int
-    opponent_ms: int
-
-
 class UciEngine:
     """Translate one line-oriented UCI process into runtime calls."""
 
@@ -130,7 +112,7 @@ class UciEngine:
         self._board = chess.Board()
         self._session: GameSession | None = None
         # Each clocked ``go`` of the current history, by the ply it was for.
-        self._clock_readings: dict[int, _ClockReading] = {}
+        self._clock_readings: dict[int, DecisionTime] = {}
         # ``go infinite`` must not answer until ``stop``, so the synchronously
         # computed response waits here instead of being sent immediately.
         self._pending_bestmove: str | None = None
@@ -350,7 +332,14 @@ class UciEngine:
             sync = self._session.sync_position(initial_fen=initial_fen, moves=moves)
             board = self._session.board
             if sync.replaced:
-                self._clock_readings.clear()
+                kept = (
+                    sync.reused_prefix_plies if initial_fen == self._initial_fen else -1
+                )
+                self._clock_readings = {
+                    ply: reading
+                    for ply, reading in self._clock_readings.items()
+                    if ply <= kept
+                }
         else:
             board = _validated_board(initial_fen, moves)
         self._initial_fen = initial_fen
@@ -399,7 +388,8 @@ class UciEngine:
             self._respond(NULL_BESTMOVE, output, infinite=infinite)
             return
         position_fen = session.board.fen()
-        time = self._decision_time(_parse_go_clock(arguments), session.board.turn)
+        board = session.board
+        time = self._decision_time(_parse_go_clock(arguments, board.turn), board)
         try:
             action = session.choose_action(time)
         except Exception as error:
@@ -423,43 +413,41 @@ class UciEngine:
         self._respond(action.move.uci(), output, infinite=infinite)
 
     def _decision_time(
-        self, clock: _GoClock | None, mover: chess.Color
+        self, reading: DecisionTime | None, board: chess.Board
     ) -> DecisionTime:
         """Return what this ``go`` and the ones before it say of the clock.
 
         Neither clock runs during the other player's move, so a reading two
         plies back of the same history gives both clocks before each player's
-        last move exactly. UCI never states the initial clock; the mover's own
-        clock at ply 0 or 1 is it.
+        last move. UCI never states the initial clock; the mover's own clock in
+        the game's first two plies is it.
         """
 
         ply = len(self._moves)
-        if clock is None:
+        if reading is None:
             self._clock_readings.pop(ply, None)
             return UNTIMED
-        white = mover == chess.WHITE
-        reading = _ClockReading(
-            player_ms=clock.white_ms if white else clock.black_ms,
-            opponent_ms=clock.black_ms if white else clock.white_ms,
-        )
         self._clock_readings[ply] = reading
         previous = self._clock_readings.get(ply - 2)
+        # Counted from the root's fullmove number, so a FEN root partway
+        # through a game is not taken for its start.
+        root_ply = board.ply() - ply
         first = next(
-            (self._clock_readings[p] for p in (0, 1) if p in self._clock_readings),
+            (
+                self._clock_readings[opening]
+                for opening in (-root_ply, 1 - root_ply)
+                if opening in self._clock_readings
+            ),
             None,
         )
-        return DecisionTime(
-            initial_ms=None if first is None else first.player_ms,
-            increment_ms=(
-                clock.white_increment_ms if white else clock.black_increment_ms
-            ),
-            player_clock_ms=reading.player_ms,
-            opponent_clock_ms=reading.opponent_ms,
+        return replace(
+            reading,
+            initial_ms=None if first is None else first.player_clock_ms,
             opponent_clock_before_last_move_ms=(
-                None if previous is None else previous.opponent_ms
+                None if previous is None else previous.opponent_clock_ms
             ),
             player_clock_before_last_move_ms=(
-                None if previous is None else previous.player_ms
+                None if previous is None else previous.player_clock_ms
             ),
         )
 
@@ -631,8 +619,8 @@ def _parse_position(arguments: str) -> tuple[str, tuple[chess.Move, ...]]:
     return initial_fen, tuple(moves)
 
 
-def _parse_go_clock(arguments: str) -> _GoClock | None:
-    """Return a ``go``'s clocks, or ``None`` when it does not carry both.
+def _parse_go_clock(arguments: str, mover: chess.Color) -> DecisionTime | None:
+    """Return a ``go``'s clocks in the mover's frame, or ``None`` without both.
 
     A malformed clock is read as no clock rather than rejected, because
     rejecting ``go`` would leave the GUI waiting for a move. A clock below zero
@@ -650,12 +638,12 @@ def _parse_go_clock(arguments: str) -> _GoClock | None:
                 return None
     if "wtime" not in fields or "btime" not in fields:
         return None
-    return _GoClock(
-        white_ms=fields["wtime"],
-        black_ms=fields["btime"],
+    white = mover == chess.WHITE
+    return DecisionTime(
         # UCI omits an increment that is zero.
-        white_increment_ms=fields.get("winc", 0),
-        black_increment_ms=fields.get("binc", 0),
+        increment_ms=fields.get("winc" if white else "binc", 0),
+        player_clock_ms=fields["wtime" if white else "btime"],
+        opponent_clock_ms=fields["btime" if white else "wtime"],
     )
 
 

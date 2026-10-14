@@ -329,3 +329,16 @@ def test_a_decision_logged_before_the_clock_was_read_is_rescored_untimed() -> No
     )
 
     assert reconstruct_uci_games(log.splitlines())[0].decisions[0].time == UNTIMED
+
+
+def test_a_decision_logging_an_unusable_time_is_rejected() -> None:
+    log = _event(
+        event="decision",
+        action_id=encode_move(chess.Move.from_uci("e2e4")),
+        move="e2e4",
+        runtime=_runtime(),
+        time={"player_clock_ms": -1},
+    )
+
+    with pytest.raises(ReconstructionError, match="unreadable time"):
+        reconstruct_uci_games([log])

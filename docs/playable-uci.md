@@ -5,9 +5,10 @@ retained checkpoint. The engine runs the model and decision runtime in the same
 process; it does not require a server or a repository-relative Python command.
 
 The current proof is intentionally narrow. It supports untimed and timed games,
-reading the clocks `go` sends without spending them, exact position replacement, legal move selection, new-game reset, target-rating and
-temperature options, and terminal positions. The selected development
-checkpoint is weak and is not a published model release.
+reading the clocks `go` sends without spending them, exact position replacement,
+legal move selection, new-game reset, target-rating and temperature options, and
+terminal positions. The selected development checkpoint is weak and is not a
+published model release.
 
 ## Select The Engine And Checkpoint
 

@@ -310,7 +310,10 @@ def _decision_time(payload: dict[str, Any]) -> DecisionTime:
     recorded = payload.get("time")
     if recorded is None:
         return UNTIMED
-    if not isinstance(recorded, dict):
+    if not isinstance(recorded, dict) or not all(
+        value is None or (type(value) is int and value >= 0)
+        for value in recorded.values()
+    ):
         raise ReconstructionError("a decision event records an unreadable time")
     try:
         return DecisionTime(**recorded)

@@ -1101,17 +1101,26 @@ def test_a_first_go_partway_through_a_game_never_learns_the_initial_clock() -> N
     assert times[1].player_clock_before_last_move_ms == 50_000
 
 
-@pytest.mark.parametrize(
-    "boundary",
-    ("position startpos moves e2e4 e7e5", "ucinewgame"),
-    ids=("takeback", "new game"),
-)
-def test_a_takeback_or_new_game_discards_the_recorded_clocks(boundary: str) -> None:
-    # The engine played g1f3 at the second go, so resending the history before
-    # it takes that move back.
+def test_a_takeback_keeps_the_clocks_of_the_history_it_keeps() -> None:
+    # The engine played g1f3 and then f1c4; the GUI takes both back and the
+    # game continues down another line to the engine's next decision.
     times = _served_times(
         *_CLOCKED_OPENING,
-        boundary,
+        "position startpos moves e2e4 e7e5 g1f3 b8c6",
+        "go wtime 58000 btime 55000 winc 1000 binc 1000",
+        "position startpos moves e2e4 e7e5 d2d4 d7d5 g1f3 b8c6",
+        "go wtime 57000 btime 54000 winc 1000 binc 1000",
+    )
+
+    assert times[-1].initial_ms == 60_000
+    assert times[-1].opponent_clock_before_last_move_ms is None
+    assert times[-1].player_clock_before_last_move_ms is None
+
+
+def test_a_new_game_discards_the_recorded_clocks() -> None:
+    times = _served_times(
+        *_CLOCKED_OPENING,
+        "ucinewgame",
         "position startpos moves e2e4 e7e5",
         "go wtime 59000 btime 56000 winc 1000 binc 1000",
     )
@@ -1121,6 +1130,17 @@ def test_a_takeback_or_new_game_discards_the_recorded_clocks(boundary: str) -> N
         player_clock_ms=59_000,
         opponent_clock_ms=56_000,
     )
+
+
+def test_a_fen_root_partway_through_a_game_is_not_its_start() -> None:
+    board = chess.Board()
+    board.push_uci("e2e4")
+    board.push_uci("e7e5")
+
+    times = _served_times(f"position fen {board.fen()}", "go wtime 12000 btime 9000")
+
+    assert times[0].initial_ms is None
+    assert times[0].player_clock_ms == 12_000
 
 
 @pytest.mark.parametrize(
