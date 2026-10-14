@@ -326,7 +326,7 @@ awareness depending on the final implementation.
 
 Other useful losses may include:
 
-- auxiliary value or phase prediction;
+- auxiliary phase prediction;
 - calibration losses for timing, when timing is enabled, or skill control.
 
 Mask penalty can be considered as an auxiliary legality loss if evaluation shows
