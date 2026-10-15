@@ -10,19 +10,20 @@ import pytest
 
 from anthro_chess.data import Speed
 from anthro_chess.data.artifacts import normalized_shard_paths
-from anthro_chess.evaluation import opening_frequency
 from anthro_chess.evaluation.aggregation import (
     OPENING_FAMILY_DIMENSION,
     SliceAggregator,
     SliceTable,
 )
 from anthro_chess.evaluation.opening_frequency import (
+    TRAINING_SAMPLE_SHARDS,
     UNCLASSIFIED_TIER,
     UNSEEN_TIER,
     OpeningFrequency,
     OpeningFrequencyError,
     count_opening_families,
     read_opening_tail,
+    sample_training_shards,
 )
 from anthro_chess.evaluation.openings.names import UNCLASSIFIED
 from anthro_chess.evaluation.policy import PositionPolicy
@@ -73,23 +74,18 @@ def test_only_the_named_split_is_counted(
     assert frequency.share("Old Indian Defense") == 0.0
 
 
-def test_a_count_reads_an_evenly_spaced_sample_of_shards(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    normalized_row: Callable[..., dict[str, Any]],
-    write_corpus: Callable[..., tuple[Path, Path]],
-) -> None:
-    monkeypatch.setattr(opening_frequency, "TRAINING_SAMPLE_SHARDS", 2)
-    rows = [normalized_row(game, split="train") for game in range(1, 5)]
-    rows[2] = normalized_row(3, split="train", moves=_SICILIAN)
-    normalized, _ = write_corpus(tmp_path / "corpus", rows, games_per_shard=1)
-    paths = normalized_shard_paths(normalized)
+def test_the_shard_sample_spans_the_corpus_evenly() -> None:
+    paths = [Path(f"games-{index:05d}.parquet") for index in range(100)]
 
-    frequency = count_opening_families(paths, "train")
+    sampled = sample_training_shards(paths)
 
-    assert frequency.paths == (str(paths[0]), str(paths[2]))
-    assert frequency.games == 2
-    assert frequency.family_games == {"Ruy Lopez": 1, "Sicilian Defense": 1}
+    assert len(sampled) == TRAINING_SAMPLE_SHARDS
+    assert sampled[0] == paths[0]
+    assert (
+        sampled[-1]
+        == paths[100 * (TRAINING_SAMPLE_SHARDS - 1) // TRAINING_SAMPLE_SHARDS]
+    )
+    assert sample_training_shards(paths[:3]) == paths[:3]
 
 
 def test_a_split_with_no_games_is_rejected(

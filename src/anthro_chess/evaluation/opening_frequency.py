@@ -139,39 +139,42 @@ def count_opening_families(
 ) -> OpeningFrequency:
     """Count each opening family's games in one split of a normalized corpus.
 
-    Only an evenly spaced sample of ``paths`` is read, and the record names the
-    shards that were. Unnamed games are counted in the total and then dropped
-    from the families, which is the one place this distribution differs from the
-    generated-play side's: a share is of every counted game, so what the book
-    could not name belongs in the denominator but is not a family.
+    Unnamed games are counted in the total and then dropped from the families,
+    which is the one place this distribution differs from the generated-play
+    side's: a share is of every counted game, so what the book could not name
+    belongs in the denominator but is not a family.
     """
 
     resolved = load_book() if book is None else book
-    sampled = _evenly_spaced(paths, TRAINING_SAMPLE_SHARDS)
     counts = dict(
         opening_distribution(
-            _training_labels(sampled, split, resolved),
+            _training_labels(paths, split, resolved),
             OpeningLevel.FAMILY,
         )
     )
     games = sum(counts.values())
     if not games:
         raise OpeningFrequencyError(
-            f"the sampled training shards hold no {split} split games to classify"
+            f"the training corpus holds no {split} split games to classify"
         )
     counts.pop(UNCLASSIFIED, None)
     return OpeningFrequency(
         split=split,
         games=games,
         family_games=counts,
-        paths=tuple(str(path) for path in sampled),
+        paths=tuple(str(path) for path in paths),
     )
 
 
-def _evenly_spaced(paths: Sequence[Path], count: int) -> Sequence[Path]:
-    if len(paths) <= count:
+def sample_training_shards(paths: Sequence[Path]) -> Sequence[Path]:
+    """Return the evenly spaced training shards a count reads."""
+
+    if len(paths) <= TRAINING_SAMPLE_SHARDS:
         return paths
-    return [paths[index * len(paths) // count] for index in range(count)]
+    return [
+        paths[index * len(paths) // TRAINING_SAMPLE_SHARDS]
+        for index in range(TRAINING_SAMPLE_SHARDS)
+    ]
 
 
 def _training_labels(
@@ -347,4 +350,5 @@ __all__ = [
     "OpeningTailReading",
     "count_opening_families",
     "read_opening_tail",
+    "sample_training_shards",
 ]

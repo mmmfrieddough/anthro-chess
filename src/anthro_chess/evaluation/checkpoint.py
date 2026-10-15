@@ -78,6 +78,7 @@ from anthro_chess.evaluation.opening_frequency import (
     OpeningTailReading,
     count_opening_families,
     read_opening_tail,
+    sample_training_shards,
 )
 from anthro_chess.evaluation.policy import (
     POLICY_SCORING_VERSION,
@@ -1182,7 +1183,9 @@ def _count_training_frequency(
             "training share says nothing about the games scored"
         )
         return None
-    paths = [Path(path) for path in leakage.training_normalized_paths]
+    paths = sample_training_shards(
+        [Path(path) for path in leakage.training_normalized_paths]
+    )
     if not all(path.exists() for path in paths):
         logger.warning(
             "Skipping the opening-frequency axis: the checkpoint's training "
