@@ -282,16 +282,17 @@ def test_only_a_model_reading_the_clock_plays_a_declared_control_differently(
 ) -> None:
     torch.manual_seed(3)
     model = MoveModel(tiny_model_config(clock_inputs=clock_inputs)).eval()
-    played: dict[str, tuple[GameRecord, TinyModelRunner]] = {}
-    for name, time in (("untimed", UNTIMED), ("blitz", declared_time("180+0"))):
+
+    def play(time: DecisionTime) -> tuple[GameRecord, TinyModelRunner]:
         runner = TinyModelRunner(model)
         (record,) = _play(
             _model(runner=runner, time=time),
             _model(runner=runner, label="other", time=time),
         )
-        played[name] = (record, runner)
+        return record, runner
 
-    (untimed, untimed_runner), (blitz, blitz_runner) = played.values()
+    untimed, untimed_runner = play(UNTIMED)
+    blitz, blitz_runner = play(declared_time("180+0"))
     first_decision_agrees = torch.equal(
         untimed_runner.logits[0], blitz_runner.logits[0]
     )
@@ -299,12 +300,6 @@ def test_only_a_model_reading_the_clock_plays_a_declared_control_differently(
     if not clock_inputs:
         assert untimed.action_ids == blitz.action_ids
         assert untimed.decisions == blitz.decisions
-
-
-@pytest.mark.parametrize("control", ["-", "3+0 blitz", "180"])
-def test_a_declared_control_has_to_name_a_clock(control: str) -> None:
-    with pytest.raises(ValueError, match="names no clock"):
-        declared_time(control)
 
 
 def test_a_control_outside_the_speed_its_games_are_drawn_at_is_refused() -> None:

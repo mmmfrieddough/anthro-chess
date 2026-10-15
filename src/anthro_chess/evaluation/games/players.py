@@ -291,7 +291,7 @@ class ModelSeat:
         runner: ActionModelRunner,
         *,
         config: RuntimeConfig,
-        time: DecisionTime = UNTIMED,
+        time: DecisionTime,
     ) -> None:
         self._runner = runner
         self._session = GameSession(runner, config=config)
