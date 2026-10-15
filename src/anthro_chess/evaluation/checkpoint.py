@@ -209,10 +209,10 @@ class DetailConfig(ConfigModel):
 class OpeningConfig(ConfigModel):
     """Whether the reading places each opening family on a frequency axis."""
 
-    #: Counting costs a replay of every training game's opening, so it scales
-    #: with the training corpus rather than with the pool being scored. The
-    #: whole opening reading hangs off it, because a per-family table without
-    #: the frequency axis cannot answer the question it exists for.
+    #: Counting costs a replay of a sample of training games' openings, on top
+    #: of the pool being scored. The whole opening reading hangs off it, because
+    #: a per-family table without the frequency axis cannot answer the question
+    #: it exists for.
     training_frequency: StrictBool = False
 
 
@@ -1162,8 +1162,8 @@ def _count_training_frequency(
     """Count how often the training selection saw each opening family.
 
     The corpus and split come from the leakage check rather than being resolved
-    a second time, so the frequency axis is counted over exactly the games that
-    check proved this checkpoint trained on.
+    a second time, so the frequency axis is counted from the games that check
+    proved this checkpoint trained on.
 
     That corpus has to be the one the pool was drawn from, or a committed tier
     would mean a share of games no fingerprint records; `docs/evaluation.md`

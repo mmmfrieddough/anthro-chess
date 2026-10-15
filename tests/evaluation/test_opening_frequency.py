@@ -10,6 +10,7 @@ import pytest
 
 from anthro_chess.data import Speed
 from anthro_chess.data.artifacts import normalized_shard_paths
+from anthro_chess.evaluation import opening_frequency
 from anthro_chess.evaluation.aggregation import (
     OPENING_FAMILY_DIMENSION,
     SliceAggregator,
@@ -70,6 +71,25 @@ def test_only_the_named_split_is_counted(
     assert frequency.family_games == {"Ruy Lopez": 2, "Sicilian Defense": 1}
     assert frequency.share("Ruy Lopez") == pytest.approx(0.5)
     assert frequency.share("Old Indian Defense") == 0.0
+
+
+def test_a_count_reads_an_evenly_spaced_sample_of_shards(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    monkeypatch.setattr(opening_frequency, "TRAINING_SAMPLE_SHARDS", 2)
+    rows = [normalized_row(game, split="train") for game in range(1, 5)]
+    rows[2] = normalized_row(3, split="train", moves=_SICILIAN)
+    normalized, _ = write_corpus(tmp_path / "corpus", rows, games_per_shard=1)
+    paths = normalized_shard_paths(normalized)
+
+    frequency = count_opening_families(paths, "train")
+
+    assert frequency.paths == (str(paths[0]), str(paths[2]))
+    assert frequency.games == 2
+    assert frequency.family_games == {"Ruy Lopez": 1, "Sicilian Defense": 1}
 
 
 def test_a_split_with_no_games_is_rejected(

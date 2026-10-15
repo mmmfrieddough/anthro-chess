@@ -1200,8 +1200,11 @@ Per-family loss alone settles nothing. Rare openings are genuinely harder to
 predict, so higher loss on the rare ones is the expected result whether or not
 they are undertrained, and only the relationship between loss and *training*
 frequency separates the two. So the whole reading hangs off one opt-in: counting
-how often the training split saw each family, which costs a replay per game. An
-ordinary reading does not pay it and does not slice by opening at all.
+how often training saw each family, which costs a replay per counted game. The
+count reads a fixed, evenly spaced sample of the training shards rather than the
+whole split, which would take days; an arm reads only a small fraction of its
+split anyway, so every share is an estimate of what it saw. A reading that does
+not opt in does not slice by opening at all.
 
 When it is asked for, every scored position carries its game's classified
 family, and the per-family table reports move loss, mask penalty, and top-k
@@ -1212,7 +1215,7 @@ That is why the table is read for its shape across families rather than for any
 one family's level.
 
 Families are then grouped into a small set of tiers by their share of the
-training selection, plus one tier for families that selection never held and one
+training selection, plus one tier for families the count never saw and one
 for games the book never named. The tiers are what reaches the committed store,
 because the per-family table is unbounded, and they are ordinary slices of the
 same scoring pass, so the bootstrap qualifies each of them the way it qualifies
