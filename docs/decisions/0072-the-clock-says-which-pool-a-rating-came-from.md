@@ -10,6 +10,9 @@ scale without naming which of a source's pools that scale is. Extends
 namespace and the speed class as separate derivations because the two can
 disagree: this record measures that in the corpus as
 `0058-the-corpus-starts-after-the-rapid-pool-split.md` cut it, they never do.
+Refined by
+`0099-the-rating-benchmarks-declare-the-control-of-their-games.md`, which
+seats the ladder at one declared control.
 
 ## Context
 

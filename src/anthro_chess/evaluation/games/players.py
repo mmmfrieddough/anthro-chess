@@ -18,14 +18,16 @@ import logging
 import random
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Annotated, Any, Protocol, runtime_checkable
 
 import chess
 from chess import engine as chess_engine
+from pydantic import AfterValidator
 from torch import Tensor
 
 from anthro_chess.chess import encode_move, legal_action_ids
-from anthro_chess.data import DecisionContext
+from anthro_chess.data import UNTIMED, DecisionContext, DecisionTime, Speed
+from anthro_chess.data.speed import parse_time_control, speed_from_time_control
 from anthro_chess.evaluation.games.records import DecisionPolicy, SeatRecord
 from anthro_chess.evaluation.results.records import CheckpointReference
 from anthro_chess.runtime import (
@@ -41,6 +43,49 @@ logger = logging.getLogger(__name__)
 
 class PlayerError(ValueError):
     """Raised when a seat cannot produce a valid action."""
+
+
+def declared_time(time_control: str | None) -> DecisionTime:
+    """Return what a seat knows of a game declared at a PGN control.
+
+    The control alone: nothing here runs a clock, so both clocks stay absent.
+    """
+
+    if time_control is None:
+        return UNTIMED
+    parsed = parse_time_control(time_control)
+    if parsed is None:
+        raise ValueError(
+            f"time control {time_control!r} names no clock; write it as "
+            "initial and increment seconds, such as '180+0'"
+        )
+    initial_seconds, increment_seconds = parsed
+    return DecisionTime(
+        initial_ms=initial_seconds * 1000,
+        increment_ms=increment_seconds * 1000,
+    )
+
+
+def _clocked_control(value: str) -> str:
+    declared_time(value)
+    return value
+
+
+#: A declared game control as PGN writes it, in seconds.
+TimeControl = Annotated[str, AfterValidator(_clocked_control)]
+
+
+def require_control_in_speed(time_control: str | None, speed: Speed | None) -> None:
+    """Refuse a control outside the speed class the games are drawn at."""
+
+    if time_control is None or speed is None:
+        return
+    banded = speed_from_time_control(time_control)
+    if banded != speed:
+        raise ValueError(
+            f"time control {time_control} is {banded}, but the games it is "
+            f"declared for are drawn at {speed}"
+        )
 
 
 @dataclass(frozen=True)
@@ -143,11 +188,13 @@ class ModelPlayer:
         label: str,
         config: RuntimeConfig | None = None,
         checkpoint: CheckpointReference | None = None,
+        time: DecisionTime = UNTIMED,
     ) -> None:
         self._runner = runner
         self._label = label
         self._config = config or RuntimeConfig()
         self._checkpoint = checkpoint
+        self._time = time
 
     @property
     def config(self) -> RuntimeConfig:
@@ -164,11 +211,18 @@ class ModelPlayer:
     def seat_record(self, *, seed: int) -> SeatRecord:
         """Return this player's resolved configuration for one game."""
 
+        configuration = self._config.model_dump(mode="json", exclude={"seed"})
+        if self._time != UNTIMED:
+            configuration["time"] = {
+                name: value
+                for name, value in vars(self._time).items()
+                if value is not None
+            }
         return SeatRecord(
             kind="model",
             label=self._label,
             seed=seed,
-            configuration=self._config.model_dump(mode="json", exclude={"seed"}),
+            configuration=configuration,
             checkpoint=self._checkpoint,
         )
 
@@ -176,7 +230,7 @@ class ModelPlayer:
         """Open one seeded game session for this configuration."""
 
         seeded = self._config.model_copy(update={"seed": seed})
-        return ModelSeat(self._runner, config=seeded)
+        return ModelSeat(self._runner, config=seeded, time=self._time)
 
     def decide_batch(
         self,
@@ -221,9 +275,16 @@ def _model_seat(seat: PlayerSeat) -> ModelSeat:
 class ModelSeat:
     """One game's session for a model player."""
 
-    def __init__(self, runner: ActionModelRunner, *, config: RuntimeConfig) -> None:
+    def __init__(
+        self,
+        runner: ActionModelRunner,
+        *,
+        config: RuntimeConfig,
+        time: DecisionTime = UNTIMED,
+    ) -> None:
         self._runner = runner
         self._session = GameSession(runner, config=config)
+        self._time = time
 
     def decide(self, request: DecisionRequest) -> SeatDecision:
         """Synchronize the session to the position and select one action."""
@@ -238,7 +299,7 @@ class ModelSeat:
                 initial_fen=request.initial_position,
                 moves=request.move_history,
             )
-            return self._session.decision_context()
+            return self._session.decision_context(self._time)
         except DecisionRuntimeError as error:
             raise PlayerError(f"model seat cannot decide: {error}") from error
 

@@ -13,7 +13,7 @@
 #
 # Values that decide *what* is measured are part of series identity: the rating
 # grid, the temperature grid, the reference temperature, whether the ablated
-# arm is fielded, the opening source, `fit.maximum_spread`,
+# arm is fielded, the opening source, the time control, `fit.maximum_spread`,
 # `generation.maximum_generated_plies`, `generation.swap_colors`,
 # `generation.claim_draws`, and `runtime.resignation_enabled`. Values that
 # decide only how precisely are not: `grid.seeds`,
@@ -36,6 +36,13 @@
 # This grid is settled rather than provisional, and openings rather than seeds
 # are what buy precision on it:
 # `docs/decisions/0080-the-ladder-widens-and-openings-replace-seeds.md`.
+
+# The control every seat is shown. A rating names a pool only through the
+# control, so a model that reads one is asked for a rating in the pool the
+# openings below are drawn from. 3+0 is the commonest blitz control in that
+# pool. No clock runs, so the clocks themselves stay absent:
+# `docs/decisions/0099-the-rating-benchmarks-declare-the-control-of-their-games.md`.
+time_control = "180+0"
 
 [runtime]
 # Rating, temperature, and seed are supplied per seat and per game, so setting

@@ -9,9 +9,10 @@
 #
 # Every cell of the matrix is its own measurement and its own stored result.
 # Values that decide *what* is measured are part of series identity: the arm,
-# each rating, each temperature, `generation.maximum_generated_plies`,
-# `generation.swap_colors`, `generation.claim_draws`, both
-# `runtime.*_enabled` switches, and `guardrails.premature_material_balance`.
+# each rating, each temperature, the time control,
+# `generation.maximum_generated_plies`, `generation.swap_colors`,
+# `generation.claim_draws`, both `runtime.*_enabled` switches, and
+# `guardrails.premature_material_balance`.
 # Values that decide only how precisely are not:
 # `grid.seeds`, `generation.games_per_position`, and `generation.concurrency`
 # can all be raised without ending a series.
@@ -33,6 +34,13 @@ pool = "artifacts/lichess-univ-2018-01-2021-06-test"
 # The generation this reading is defined over. A superseded pool left at that
 # path is refused rather than scored.
 expected_pool_game_ids_sha256 = "8ff80e72aac7dadd07a418e0c951d3c56a1045a48cd74de903da00bc4525a94c"
+
+# The control every seat and the opening walk are shown, so a model that reads
+# one plays the speed class the reference below is drawn at. 3+0 is the
+# commonest blitz control in the pool. No clock runs, so the clocks themselves
+# stay absent:
+# `docs/decisions/0099-the-rating-benchmarks-declare-the-control-of-their-games.md`.
+time_control = "180+0"
 
 [runtime]
 # Rating, temperature, and seed are supplied per cell and per game, so setting
