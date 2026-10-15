@@ -103,7 +103,11 @@ from anthro_chess.training.efficiency import (
     execution_record as efficiency_execution_record,
 )
 from anthro_chess.training.health import StepHealth, StepHealthMonitor
-from anthro_chess.training.losses import masked_action_cross_entropy
+from anthro_chess.training.losses import (
+    PLY_WEIGHT_RAMP_PLIES,
+    masked_action_cross_entropy,
+    ply_weighted_action_cross_entropy,
+)
 from anthro_chess.training.schedule import LearningRateSchedule
 from anthro_chess.training.tensorboard import (
     TENSORBOARD_DIRECTORY,
@@ -699,6 +703,7 @@ def _train(
             schedule=schedule,
             learning_rate_schedule=config.learning_rate_schedule(),
             gradient_clip_norm=config.gradient_clip_norm,
+            ply_weight_strength=config.ply_weight_strength,
             run_id=run_id,
             efficiency=efficiency_recorder,
             run_record=run_record,
@@ -854,6 +859,7 @@ def _optimize(
     schedule: CadenceSchedule,
     learning_rate_schedule: LearningRateSchedule,
     gradient_clip_norm: float,
+    ply_weight_strength: float,
     run_id: str,
     efficiency: _EfficiencyRecorder,
     run_record: _RunRecordWriter,
@@ -973,15 +979,27 @@ def _optimize(
                     else nullcontext()
                 ):
                     with autocast:
+                        action_logits = trained(batch)
                         loss = masked_action_cross_entropy(
-                            trained(batch),
+                            action_logits,
                             batch.action_targets,
                             batch.action_loss_mask,
+                        )
+                        objective = (
+                            ply_weighted_action_cross_entropy(
+                                action_logits,
+                                batch.action_targets,
+                                batch.action_loss_mask,
+                                batch.ply_indices,
+                                ply_weight_strength,
+                            )
+                            if ply_weight_strength
+                            else loss
                         )
                     # Backward stays outside the autocast scope. Each
                     # operation's backward already runs in the dtype its forward
                     # chose, and nesting it would autocast a second time.
-                    (loss / local_accumulation).backward()
+                    (objective / local_accumulation).backward()
                 if profile_phases:
                     _synchronize_device(device)
                 compute_seconds += time.perf_counter() - compute_started
@@ -1425,6 +1443,12 @@ def compatibility_record(
     # match the ones recorded before the key existed.
     if config.weight_decay:
         training_config["weight_decay_exemption"] = "exempt-one-dimensional"
+    # Omitted when off, so unweighted identities match the ones recorded before
+    # the key existed. Names the ramp the weighting rises over when it is on.
+    if config.ply_weight_strength:
+        training_config["ply_weight_ramp_plies"] = PLY_WEIGHT_RAMP_PLIES
+    else:
+        del training_config["ply_weight_strength"]
     return {
         "training_config": training_config,
         "data": {

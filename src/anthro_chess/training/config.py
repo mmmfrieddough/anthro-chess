@@ -86,6 +86,10 @@ class TrainingConfig(ConfigModel):
     #: Decoupled from the gradient, so what it sets is a timescale against the
     #: learning rate rather than a term the second moment rescales.
     weight_decay: float = Field(default=0.0, ge=0.0)
+    #: How far a game's first decision is weighted below the decisions past its
+    #: opening, as a fraction of their weight. Ply index stands in for how often
+    #: a position recurs across games, which falls off through the opening.
+    ply_weight_strength: float = Field(default=0.0, ge=0.0, lt=1.0)
     #: Adam's second moment, which averages over a number of steps rather than
     #: over a quantity of data, so it moves when the batch does.
     second_moment_decay: float = Field(default=0.999, gt=0.0, lt=1.0)

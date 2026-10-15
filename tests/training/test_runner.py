@@ -514,6 +514,15 @@ def test_the_training_identity_holds_everything_but_the_seed_and_a_branch(
     assert "weight_decay_exemption" in cast(Any, decayed["training_config"])
     assert "weight_decay_exemption" not in cast(Any, undecayed["training_config"])
 
+    # So does the ply weighting, and with it the ramp it rises over.
+    weighted = compatibility_record(
+        config.model_copy(update={"ply_weight_strength": 0.5}),
+        data=data,
+        model={"parameters": 276_002},
+    )
+    assert cast(Any, weighted["training_config"])["ply_weight_ramp_plies"] > 0
+    assert "ply_weight_strength" not in cast(Any, undecayed["training_config"])
+
 
 def test_matmul_precision_is_applied_for_the_run_and_restored_after_it(
     tmp_path: Path,

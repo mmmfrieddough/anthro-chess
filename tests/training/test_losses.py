@@ -18,6 +18,37 @@ from anthro_chess.data import (
 )
 from anthro_chess.models import MoveModelBatch
 from anthro_chess.training import masked_action_cross_entropy
+from anthro_chess.training.losses import (
+    PLY_WEIGHT_RAMP_PLIES,
+    ply_weighted_action_cross_entropy,
+)
+
+
+def test_ply_weighting_ramps_early_decisions_up_to_full_weight() -> None:
+    logits = torch.tensor([[[2.0, 0.0], [0.0, 2.0], [1.0, 0.0], [0.0, 0.0]]])
+    targets = torch.tensor([[1, 1, 0, 0]])
+    mask = torch.tensor([[True, True, True, False]])
+    plies = torch.tensor(
+        [[0, PLY_WEIGHT_RAMP_PLIES // 2, 2 * PLY_WEIGHT_RAMP_PLIES, 0]]
+    )
+
+    loss = ply_weighted_action_cross_entropy(logits, targets, mask, plies, 0.5)
+
+    each = F.cross_entropy(logits[0, :3], targets[0, :3], reduction="none")
+    weights = torch.tensor([0.5, 0.75, 1.0])
+    torch.testing.assert_close(loss, (each * weights).sum() / weights.sum())
+
+
+def test_ply_weighting_at_no_strength_is_the_plain_loss() -> None:
+    logits = torch.randn(2, 3, 5)
+    targets = torch.randint(0, 5, (2, 3))
+    mask = torch.tensor([[True, True, False], [True, False, False]])
+    plies = torch.tensor([[0, 1, 2], [40, 0, 0]])
+
+    torch.testing.assert_close(
+        ply_weighted_action_cross_entropy(logits, targets, mask, plies, 0.0),
+        masked_action_cross_entropy(logits, targets, mask),
+    )
 
 
 def test_action_loss_uses_only_explicitly_enabled_targets() -> None:
