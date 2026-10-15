@@ -52,7 +52,34 @@ readings move only in their series identity.
 
 ## What Was Measured
 
-To be filled from the shakedown and the recorded readings.
+The six vehicle arms and both `#497` clock arms were read at the declared size
+with the control in place, and the vehicle's seed dispersion was regenerated
+from its arms so the new series carry a seed floor.
+
+**The vehicle reproduces itself exactly.** A vehicle arm's ladder slopes and
+rollout cells under 3+0 equal its untimed readings to the last bit; only the
+series identity moved.
+
+**The dial widens for a clock-reading model.** `ladder.fitted_rating_slope` at
+T=0 / 0.7 / 1.0, against the vehicle's 0.289 / 0.316 / 0.291 at seed 17:
+
+| arm | untimed | 3+0 declared |
+| --- | --- | --- |
+| clock, seed 17 | 0.289 / 0.301 / 0.314 | 0.365 / 0.371 / 0.410 |
+| clock, seed 29 | 0.299 / 0.309 / 0.289 | 0.387 / 0.399 / 0.368 |
+
+Every declared delta clears the benchmark's own floor, and three of the six
+clear the seed floor as well; no untimed one does. Order stays perfect
+throughout. The seed-17 reading equals the one the issue took through a patch
+before this change, to the digit.
+
+**Generated play does not move toward the human reference.** Of the 48 distance
+cells per arm, none clears both floors untimed, and with the control four do on
+seed 17 and none on seed 29. Those four are the result and repetition distances
+at T=0.7, and all four move away from the reference. An unrecorded shakedown on
+two checkpoints of the seed-17 arm read game length farther from the blitz
+reference at 3+0 than untimed, at both checkpoints and both sampled
+temperatures, inside the seed floor.
 
 ## What This Gives Up
 
