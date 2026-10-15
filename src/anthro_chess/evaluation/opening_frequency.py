@@ -11,8 +11,8 @@ decision it exists to falsify.
 Counting is derived here rather than stored beside the corpus, for the reason
 `docs/decisions/0015-owned-opening-book.md` gives for classification generally:
 a book or granularity change would otherwise mean regenerating data. The cost is
-a replay of every training game's opening, which is why the reading that needs
-it asks for it.
+a replay of each counted game's opening, which is why the count reads a fixed
+sample of the training shards rather than all of them.
 """
 
 from __future__ import annotations
@@ -53,8 +53,8 @@ OPENING_FREQUENCY_TIERS: tuple[tuple[str, float], ...] = (
     ("very_rare_opening", 0.0),
 )
 
-#: A family the scored games realized and the training selection never did. Its
-#: share is zero rather than small, which is a different statement.
+#: A family the scored games realized and the counted training games never did.
+#: Its share is zero rather than small, which is a different statement.
 UNSEEN_TIER = "unseen_opening"
 
 #: Games the book named nothing in. Not a family, so it is reported on its own
@@ -72,6 +72,12 @@ OPENING_TIER_NAMES: tuple[str, ...] = (
 #: over. Read off the tier table rather than restated, so the fit and the tiers
 #: cut the distribution in the same place by construction.
 TAIL_SHARE_CEILING = dict(OPENING_FREQUENCY_TIERS)["uncommon_opening"]
+
+#: Training shards a count reads, spaced evenly through the corpus so that no one
+#: stretch of it stands for the whole. Every share is an estimate of what an arm
+#: saw, since an arm reads a small fraction of its split, and a replay of the
+#: whole split costs days of processor time where this costs minutes.
+TRAINING_SAMPLE_SHARDS = 24
 
 
 class OpeningFrequencyError(ValueError):
@@ -96,7 +102,7 @@ class OpeningFrequency:
     def share(self, family: str) -> float:
         """Return one family's share of the training selection.
 
-        The denominator is every training game rather than every classified one,
+        The denominator is every counted game rather than every classified one,
         so a share is comparable across corpora whose unnamed fraction differs.
         """
 
@@ -135,16 +141,18 @@ def count_opening_families(
 ) -> OpeningFrequency:
     """Count each opening family's games in one split of a normalized corpus.
 
-    Unnamed games are counted in the total and then dropped from the families,
-    which is the one place this distribution differs from the generated-play
-    side's: a share is of every training game, so what the book could not name
-    belongs in the denominator but is not a family.
+    Only an evenly spaced sample of ``paths`` is read, and the record names the
+    shards that were. Unnamed games are counted in the total and then dropped
+    from the families, which is the one place this distribution differs from the
+    generated-play side's: a share is of every counted game, so what the book
+    could not name belongs in the denominator but is not a family.
     """
 
     resolved = load_book() if book is None else book
+    sampled = _evenly_spaced(paths, TRAINING_SAMPLE_SHARDS)
     counts = dict(
         opening_distribution(
-            _training_labels(paths, split, resolved),
+            _training_labels(sampled, split, resolved),
             OpeningLevel.FAMILY,
         )
     )
@@ -158,8 +166,14 @@ def count_opening_families(
         split=split,
         games=games,
         family_games=counts,
-        paths=tuple(str(path) for path in paths),
+        paths=tuple(str(path) for path in sampled),
     )
+
+
+def _evenly_spaced(paths: Sequence[Path], count: int) -> Sequence[Path]:
+    if len(paths) <= count:
+        return paths
+    return [paths[index * len(paths) // count] for index in range(count)]
 
 
 def _training_labels(
@@ -326,6 +340,7 @@ __all__ = [
     "OPENING_FREQUENCY_VERSION",
     "OPENING_TIER_NAMES",
     "TAIL_SHARE_CEILING",
+    "TRAINING_SAMPLE_SHARDS",
     "UNCLASSIFIED_TIER",
     "UNSEEN_TIER",
     "FamilyTailRow",
