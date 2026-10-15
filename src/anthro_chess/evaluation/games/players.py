@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import random
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Annotated, Any, Protocol, runtime_checkable
 
 import chess
@@ -53,26 +53,41 @@ def declared_time(time_control: str | None) -> DecisionTime:
 
     if time_control is None:
         return UNTIMED
-    parsed = parse_time_control(time_control)
-    if parsed is None:
-        raise ValueError(
-            f"time control {time_control!r} names no clock; write it as "
-            "initial and increment seconds, such as '180+0'"
-        )
-    initial_seconds, increment_seconds = parsed
+    initial_seconds, increment_seconds = _clock_seconds(time_control)
     return DecisionTime(
         initial_ms=initial_seconds * 1000,
         increment_ms=increment_seconds * 1000,
     )
 
 
+def _clock_seconds(time_control: str) -> tuple[int, int]:
+    parsed = parse_time_control(time_control)
+    if parsed is None:
+        raise ValueError(
+            f"time control {time_control!r} names no clock; write it as "
+            "initial and increment seconds, such as '180+0'"
+        )
+    return parsed
+
+
 def _clocked_control(value: str) -> str:
-    declared_time(value)
-    return value
+    initial_seconds, increment_seconds = _clock_seconds(value)
+    return f"{initial_seconds}+{increment_seconds}"
 
 
-#: A declared game control as PGN writes it, in seconds.
+#: A declared game control as PGN writes it, in seconds, spelled one way so a
+#: workload carrying it names one series.
 TimeControl = Annotated[str, AfterValidator(_clocked_control)]
+
+
+def control_workload(time_control: str | None) -> dict[str, str]:
+    """Return what a declared control adds to a benchmark's workload.
+
+    Nothing when none is declared, since an untimed seat plays what it always
+    did and its series should continue.
+    """
+
+    return {} if time_control is None else {"time_control": time_control}
 
 
 def require_control_in_speed(time_control: str | None, speed: Speed | None) -> None:
@@ -213,11 +228,7 @@ class ModelPlayer:
 
         configuration = self._config.model_dump(mode="json", exclude={"seed"})
         if self._time != UNTIMED:
-            configuration["time"] = {
-                name: value
-                for name, value in vars(self._time).items()
-                if value is not None
-            }
+            configuration["time"] = asdict(self._time)
         return SeatRecord(
             kind="model",
             label=self._label,

@@ -271,10 +271,7 @@ def test_a_declared_control_reaches_every_decision_with_the_clocks_absent() -> N
     assert blitz == DecisionTime(initial_ms=180_000, increment_ms=2_000)
     assert set(runner.times) == {blitz}
     # What the seat was shown is part of what reproduces its game.
-    assert record.white.configuration["time"] == {
-        "initial_ms": 180_000,
-        "increment_ms": 2_000,
-    }
+    assert DecisionTime(**record.white.configuration["time"]) == blitz
     (untimed,) = _play(_model(), _model(label="other"))
     assert "time" not in untimed.white.configuration
 

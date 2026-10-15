@@ -51,6 +51,7 @@ from anthro_chess.evaluation.games.players import (
     SeatDecision,
     TimeControl,
     UciEngineProcess,
+    control_workload,
     declared_time,
     require_control_in_speed,
 )
@@ -111,6 +112,7 @@ __all__ = [
     "analyze_trajectory",
     "build_game_record",
     "collapse_replicates",
+    "control_workload",
     "declared_time",
     "generate_games",
     "parse_game_records",
