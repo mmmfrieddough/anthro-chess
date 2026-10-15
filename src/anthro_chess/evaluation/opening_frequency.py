@@ -8,19 +8,25 @@ the shape of loss against training frequency the reading, and
 `docs/decisions/0016-sampling-axes-versus-measured-distributions.md` owns the
 decision it exists to falsify.
 
-Counting is derived here rather than stored beside the corpus, for the reason
+Counting is derived here rather than written into the corpus, for the reason
 `docs/decisions/0015-owned-opening-book.md` gives for classification generally:
 a book or granularity change would otherwise mean regenerating data. The cost is
-a replay of every training game's opening, which is why the reading that needs
-it asks for it.
+a replay of each counted game's opening, so a count is saved beside the shards
+it read, keyed by the corpus and the book, and a changed book is a miss that
+counts again.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
+import os
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from math import log10
 from pathlib import Path
+from typing import Any
 
 from anthro_chess.data.artifacts import DataLoadingError, read_normalized_rows
 from anthro_chess.data.schema import NormalizedColumn
@@ -39,7 +45,12 @@ from anthro_chess.evaluation.openings import (
     opening_distribution,
 )
 
+logger = logging.getLogger(__name__)
+
 OPENING_FREQUENCY_VERSION = 1
+
+#: Written beside the training shards, so it shares the corpus's lifetime.
+OPENING_FREQUENCY_FILE_NAME = "opening-frequency.json"
 
 #: Tier a family falls in, by its share of the training selection, from the most
 #: common down. The boundaries are code-owned rather than configurable: they are
@@ -53,8 +64,8 @@ OPENING_FREQUENCY_TIERS: tuple[tuple[str, float], ...] = (
     ("very_rare_opening", 0.0),
 )
 
-#: A family the scored games realized and the training selection never did. Its
-#: share is zero rather than small, which is a different statement.
+#: A family the scored games realized and the counted training games never did.
+#: Its share is zero rather than small, which is a different statement.
 UNSEEN_TIER = "unseen_opening"
 
 #: Games the book named nothing in. Not a family, so it is reported on its own
@@ -72,6 +83,10 @@ OPENING_TIER_NAMES: tuple[str, ...] = (
 #: over. Read off the tier table rather than restated, so the fit and the tiers
 #: cut the distribution in the same place by construction.
 TAIL_SHARE_CEILING = dict(OPENING_FREQUENCY_TIERS)["uncommon_opening"]
+
+#: Training shards a count reads, spaced evenly through the corpus so that no one
+#: stretch of it stands for the whole. A replay of every shard costs days.
+TRAINING_SAMPLE_SHARDS = 24
 
 
 class OpeningFrequencyError(ValueError):
@@ -96,7 +111,7 @@ class OpeningFrequency:
     def share(self, family: str) -> float:
         """Return one family's share of the training selection.
 
-        The denominator is every training game rather than every classified one,
+        The denominator is every counted game rather than every classified one,
         so a share is comparable across corpora whose unnamed fraction differs.
         """
 
@@ -137,7 +152,7 @@ def count_opening_families(
 
     Unnamed games are counted in the total and then dropped from the families,
     which is the one place this distribution differs from the generated-play
-    side's: a share is of every training game, so what the book could not name
+    side's: a share is of every counted game, so what the book could not name
     belongs in the denominator but is not a family.
     """
 
@@ -160,6 +175,107 @@ def count_opening_families(
         family_games=counts,
         paths=tuple(str(path) for path in paths),
     )
+
+
+def open_opening_frequency(
+    paths: Sequence[Path],
+    split: str,
+    *,
+    corpus_sha256: str,
+) -> OpeningFrequency:
+    """Return the count over ``paths``, counting and saving it the first time.
+
+    A count the corpus cannot hold, on a read-only copy say, is still returned;
+    the next reading counts again.
+    """
+
+    book = load_book()
+    path = paths[0].parent / OPENING_FREQUENCY_FILE_NAME
+    key = _artifact_key(paths, split, corpus_sha256, book)
+    stored = _read_matching(path, key)
+    if stored is not None:
+        return OpeningFrequency(
+            split=split,
+            games=int(stored["games"]),
+            family_games={
+                family: int(games) for family, games in stored["family_games"].items()
+            },
+            paths=tuple(str(item) for item in paths),
+        )
+    logger.info(
+        "Classifying the %s split of the training corpus by opening family; "
+        "later readings of this corpus read %s",
+        split,
+        path.name,
+    )
+    frequency = count_opening_families(paths, split, book=book)
+    record = {
+        "key": key,
+        "games": frequency.games,
+        "family_games": dict(frequency.family_games),
+    }
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError as error:
+        temporary.unlink(missing_ok=True)
+        logger.warning("Cannot save the opening-family count to %s: %s", path, error)
+    return frequency
+
+
+def _artifact_key(
+    paths: Sequence[Path],
+    split: str,
+    corpus_sha256: str,
+    book: OpeningBook,
+) -> str:
+    """Return the digest a stored count has to carry to be read.
+
+    Shards are named rather than located, so a corpus moved between roots still
+    finds its count.
+    """
+
+    payload = {
+        "version": OPENING_FREQUENCY_VERSION,
+        "corpus_sha256": corpus_sha256,
+        "split": split,
+        "shards": [path.name for path in paths],
+        "book": book.identity(),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _read_matching(path: Path, key: str) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        stored: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise OpeningFrequencyError(
+            f"cannot read the opening-family count {path}: {error}"
+        ) from error
+    if stored.get("key") != key:
+        logger.info(
+            "The opening-family count at %s was taken under a different corpus, "
+            "sample or book; counting again",
+            path,
+        )
+        return None
+    return stored
+
+
+def sample_training_shards(paths: Sequence[Path]) -> Sequence[Path]:
+    """Return the evenly spaced training shards a count reads."""
+
+    if len(paths) <= TRAINING_SAMPLE_SHARDS:
+        return paths
+    return [
+        paths[index * len(paths) // TRAINING_SAMPLE_SHARDS]
+        for index in range(TRAINING_SAMPLE_SHARDS)
+    ]
 
 
 def _training_labels(
@@ -254,7 +370,7 @@ def read_opening_tail(
     Unnamed games carry no frequency, so they are left out entirely rather than
     entered at a share of zero: they would sit at the far end of the axis the
     slope is fitted over while saying nothing about how often any opening was
-    trained on. A family the training selection never held keeps its row and its
+    trained on. A family the count never saw keeps its row and its
     own tier, but a share of zero has no place on a log axis either, so the fit
     skips it too.
     """
@@ -322,10 +438,12 @@ _COUNTED_COLUMNS = (
 
 
 __all__ = [
+    "OPENING_FREQUENCY_FILE_NAME",
     "OPENING_FREQUENCY_TIERS",
     "OPENING_FREQUENCY_VERSION",
     "OPENING_TIER_NAMES",
     "TAIL_SHARE_CEILING",
+    "TRAINING_SAMPLE_SHARDS",
     "UNCLASSIFIED_TIER",
     "UNSEEN_TIER",
     "FamilyTailRow",
@@ -333,5 +451,7 @@ __all__ = [
     "OpeningFrequencyError",
     "OpeningTailReading",
     "count_opening_families",
+    "open_opening_frequency",
     "read_opening_tail",
+    "sample_training_shards",
 ]

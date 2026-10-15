@@ -397,8 +397,3 @@ reading here that bears on it.
 rate at which vehicle-scale rankings survive a size gap, and no outside source
 found publishes it for a gap this large either. Treat every vehicle-scale
 adoption as provisional until the confirmation run.
-
-**Whether state-frequency skew costs capacity.** Human game archives are heavily
-concentrated in openings, and outside work reports capacity flowing to frequent
-positions at the expense of rarer decisive ones in some board games. Whether that
-happens here is unmeasured.

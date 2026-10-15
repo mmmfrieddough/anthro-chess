@@ -18,3 +18,8 @@ name = "canonical"
 
 [loader]
 batch_size = 8
+
+[openings]
+# Slices the reading by opening family and by how often training saw each one,
+# which is what the rare-opening tail is read from.
+training_frequency = true

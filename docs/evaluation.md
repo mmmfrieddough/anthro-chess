@@ -1200,8 +1200,12 @@ Per-family loss alone settles nothing. Rare openings are genuinely harder to
 predict, so higher loss on the rare ones is the expected result whether or not
 they are undertrained, and only the relationship between loss and *training*
 frequency separates the two. So the whole reading hangs off one opt-in: counting
-how often the training split saw each family, which costs a replay per game. An
-ordinary reading does not pay it and does not slice by opening at all.
+how often training saw each family, which costs a replay per counted game. The
+count reads a fixed, evenly spaced sample of the training shards rather than the
+whole split, which would take days, so every share is an estimate. The count
+is taken once per corpus and saved beside the shards it read, keyed by the
+corpus, the split, those shards, and the book, so a change to any of them counts
+again. A reading that does not opt in does not slice by opening at all.
 
 When it is asked for, every scored position carries its game's classified
 family, and the per-family table reports move loss, mask penalty, and top-k
@@ -1212,7 +1216,7 @@ That is why the table is read for its shape across families rather than for any
 one family's level.
 
 Families are then grouped into a small set of tiers by their share of the
-training selection, plus one tier for families that selection never held and one
+training selection, plus one tier for families the count never saw and one
 for games the book never named. The tiers are what reaches the committed store,
 because the per-family table is unbounded, and they are ordinary slices of the
 same scoring pass, so the bootstrap qualifies each of them the way it qualifies
@@ -1225,9 +1229,10 @@ tier and training share to join against its row in the slice table.
 
 A tier is a share of the *training* corpus, and a series fingerprint's data
 component covers only the games scored. Those two pin each other only when one
-corpus supplies both, so the reading is refused outright on a checkpoint that
-trained somewhere other than where the pool came from, rather than committing a
-series whose slice membership nothing recorded. For the same reason the tier
+corpus supplies both, so a checkpoint that trained somewhere other than where
+the pool came from is read without the axis, with a warning, rather than
+committing a series whose slice membership nothing recorded. So is one whose
+training corpus is not on the machine taking the reading. For the same reason the tier
 boundaries are code-owned rather than configurable: a configured boundary would
 move families between series without changing any metric identity.
 

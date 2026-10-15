@@ -285,7 +285,7 @@ def test_counting_training_frequency_commits_the_tier_series(
     assert payload["opening_frequency"]["split"] == "train"
 
 
-def test_a_foreign_training_corpus_refuses_the_frequency_axis(
+def test_a_foreign_training_corpus_reads_without_the_frequency_axis(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
     normalized_row: Callable[..., dict[str, Any]],
@@ -312,8 +312,29 @@ def test_a_foreign_training_corpus_refuses_the_frequency_axis(
         manifest=other_manifest,
     )
 
-    with pytest.raises(CheckpointEvaluationError, match="the same one"):
-        _evaluate(_config(pool, checkpoint, openings={"training_frequency": True}))
+    result = _evaluate(_config(pool, checkpoint, openings={"training_frequency": True}))
+
+    assert result.opening_frequency is None
+    assert not result.slices.dimensions[OPENING_TIER_DIMENSION]
+
+
+def test_a_training_corpus_off_this_machine_reads_without_the_frequency_axis(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
+    for shard in normalized.glob("*.parquet"):
+        shard.unlink()
+
+    result = _evaluate(_config(pool, checkpoint, openings={"training_frequency": True}))
+
+    assert result.opening_frequency is None
+    assert not result.slices.dimensions[OPENING_TIER_DIMENSION]
 
 
 def test_repeated_evaluation_reproduces_every_measurement(

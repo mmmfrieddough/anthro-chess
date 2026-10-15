@@ -76,8 +76,9 @@ from anthro_chess.evaluation.opening_frequency import (
     OpeningFrequency,
     OpeningFrequencyError,
     OpeningTailReading,
-    count_opening_families,
+    open_opening_frequency,
     read_opening_tail,
+    sample_training_shards,
 )
 from anthro_chess.evaluation.policy import (
     POLICY_SCORING_VERSION,
@@ -209,10 +210,10 @@ class DetailConfig(ConfigModel):
 class OpeningConfig(ConfigModel):
     """Whether the reading places each opening family on a frequency axis."""
 
-    #: Counting costs a replay of every training game's opening, so it scales
-    #: with the training corpus rather than with the pool being scored. The
-    #: whole opening reading hangs off it, because a per-family table without
-    #: the frequency axis cannot answer the question it exists for.
+    #: Counting costs a replay of a sample of training games' openings, on top
+    #: of the pool being scored. The whole opening reading hangs off it, because
+    #: a per-family table without the frequency axis cannot answer the question
+    #: it exists for.
     training_frequency: StrictBool = False
 
 
@@ -1162,32 +1163,42 @@ def _count_training_frequency(
     """Count how often the training selection saw each opening family.
 
     The corpus and split come from the leakage check rather than being resolved
-    a second time, so the frequency axis is counted over exactly the games that
-    check proved this checkpoint trained on.
+    a second time, so the frequency axis is counted from the games that check
+    proved this checkpoint trained on.
 
     That corpus has to be the one the pool was drawn from, or a committed tier
     would mean a share of games no fingerprint records; `docs/evaluation.md`
     argues it. What settles the question is the training manifest the checkpoint
     recorded, so a ``leakage.training_normalized`` override still has to name a
-    copy of that corpus rather than a subset of it.
+    copy of that corpus rather than a subset of it. Where the corpora differ, or
+    the training shards are not on this machine, the reading goes ahead without
+    the axis.
     """
 
     if not config.openings.training_frequency:
         return None
     if not leakage.same_source_corpus:
-        raise CheckpointEvaluationError(
-            "the opening-frequency axis needs the checkpoint's training corpus "
-            "and this pool's source corpus to be the same one; they are not, "
-            "so a family's training share says nothing about the games scored"
+        logger.warning(
+            "Skipping the opening-frequency axis: the checkpoint's training "
+            "corpus is not the one this pool was drawn from, so a family's "
+            "training share says nothing about the games scored"
         )
-    logger.info(
-        "Classifying the %s split of the training corpus by opening family",
-        leakage.training_split,
+        return None
+    paths = sample_training_shards(
+        [Path(path) for path in leakage.training_normalized_paths]
     )
+    if not all(path.exists() for path in paths):
+        logger.warning(
+            "Skipping the opening-frequency axis: the checkpoint's training "
+            "corpus is not on this machine"
+        )
+        return None
+    assert leakage.training_manifest_sha256 is not None  # same_source_corpus
     try:
-        return count_opening_families(
-            [Path(path) for path in leakage.training_normalized_paths],
+        return open_opening_frequency(
+            paths,
             leakage.training_split,
+            corpus_sha256=leakage.training_manifest_sha256,
         )
     except OpeningFrequencyError as error:
         raise CheckpointEvaluationError(str(error)) from error
