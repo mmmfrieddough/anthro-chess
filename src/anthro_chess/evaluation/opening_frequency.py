@@ -11,8 +11,7 @@ decision it exists to falsify.
 Counting is derived here rather than stored beside the corpus, for the reason
 `docs/decisions/0015-owned-opening-book.md` gives for classification generally:
 a book or granularity change would otherwise mean regenerating data. The cost is
-a replay of each counted game's opening, which is why the count reads a fixed
-sample of the training shards rather than all of them.
+a replay of each counted game's opening.
 """
 
 from __future__ import annotations

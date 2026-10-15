@@ -1170,8 +1170,9 @@ def _count_training_frequency(
     would mean a share of games no fingerprint records; `docs/evaluation.md`
     argues it. What settles the question is the training manifest the checkpoint
     recorded, so a ``leakage.training_normalized`` override still has to name a
-    copy of that corpus rather than a subset of it. Where it is not, or is not
-    on this machine, the reading goes ahead without the axis.
+    copy of that corpus rather than a subset of it. Where the corpora differ, or
+    the training shards are not on this machine, the reading goes ahead without
+    the axis.
     """
 
     if not config.openings.training_frequency:
