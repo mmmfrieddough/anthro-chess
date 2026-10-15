@@ -11,6 +11,8 @@ corpus the evaluation core is designated from, and names the axes it keeps
 whole.
 `0092-the-rating-axis-is-balanced-by-thinning-at-four.md` reweights the one
 axis this record opens, and says how far.
+`0098-weighting-the-opening-down-buys-no-late-game-play.md` measures the
+rare-opening cost this record accepts and finds it is difficulty, not scarcity.
 
 ## Context
 
