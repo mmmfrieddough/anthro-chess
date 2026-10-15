@@ -10,18 +10,21 @@ import pytest
 
 from anthro_chess.data import Speed
 from anthro_chess.data.artifacts import normalized_shard_paths
+from anthro_chess.evaluation import opening_frequency
 from anthro_chess.evaluation.aggregation import (
     OPENING_FAMILY_DIMENSION,
     SliceAggregator,
     SliceTable,
 )
 from anthro_chess.evaluation.opening_frequency import (
+    OPENING_FREQUENCY_FILE_NAME,
     TRAINING_SAMPLE_SHARDS,
     UNCLASSIFIED_TIER,
     UNSEEN_TIER,
     OpeningFrequency,
     OpeningFrequencyError,
     count_opening_families,
+    open_opening_frequency,
     read_opening_tail,
     sample_training_shards,
 )
@@ -86,6 +89,37 @@ def test_the_shard_sample_spans_the_corpus_evenly() -> None:
         == paths[100 * (TRAINING_SAMPLE_SHARDS - 1) // TRAINING_SAMPLE_SHARDS]
     )
     assert sample_training_shards(paths[:3]) == paths[:3]
+
+
+def test_a_count_is_saved_and_read_back_until_its_key_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    rows = [
+        normalized_row(1, split="train"),
+        normalized_row(2, split="train", moves=_SICILIAN),
+    ]
+    normalized, _ = write_corpus(tmp_path / "corpus", rows)
+    paths = normalized_shard_paths(normalized)
+    counted: list[str] = []
+
+    def counting(*args: Any, **kwargs: Any) -> OpeningFrequency:
+        counted.append(args[1])
+        return count_opening_families(*args, **kwargs)
+
+    monkeypatch.setattr(opening_frequency, "count_opening_families", counting)
+
+    first = open_opening_frequency(paths, "train", corpus_sha256="a")
+    again = open_opening_frequency(paths, "train", corpus_sha256="a")
+    other = open_opening_frequency(paths, "train", corpus_sha256="b")
+
+    assert counted == ["train", "train"]
+    assert (paths[0].parent / OPENING_FREQUENCY_FILE_NAME).exists()
+    assert again == first
+    assert other == first
+    assert first.family_games == {"Ruy Lopez": 1, "Sicilian Defense": 1}
 
 
 def test_a_split_with_no_games_is_rejected(

@@ -7,6 +7,8 @@ Date: 2026-10-14
 Accepted. Answers `#554`. Measures the tail cost that
 `0016-sampling-axes-versus-measured-distributions.md` accepts, and the question
 `docs/scaling.md` listed as open, whether state-frequency skew costs capacity.
+Stores the opening-family count the way
+`0069-a-frozen-pool-carries-its-position-labels.md` stores a pool's labels.
 
 ## Context
 
@@ -135,7 +137,9 @@ The weighting touches only the training objective, so `arm-554-ply-weight-0p5`
 and `arm-554-ply-weight-0p9` load with ordinary code.
 
 Every canonical reading now carries `held_out.move_loss_*_opening` tier series and
-the tail slope in its detail, and pays about five minutes for the count.
+the tail slope in its detail. The count costs about five minutes once per
+training corpus and is read back after that, the way `0069` treats a pool's
+position labels.
 
 ## References
 
@@ -143,5 +147,6 @@ the tail slope in its detail, and pays about five minutes for the count.
 - `0016-sampling-axes-versus-measured-distributions.md`
 - `0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-on.md`
 - `0088-the-horizon-has-a-ceiling-and-it-is-counted-in-steps.md`
+- `0069-a-frozen-pool-carries-its-position-labels.md`
 - `0092-the-rating-axis-is-balanced-by-thinning-at-four.md`
 - `docs/evaluation.md` (Opening Family And The Rare-Opening Tail)

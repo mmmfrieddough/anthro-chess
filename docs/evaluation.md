@@ -1202,8 +1202,10 @@ they are undertrained, and only the relationship between loss and *training*
 frequency separates the two. So the whole reading hangs off one opt-in: counting
 how often training saw each family, which costs a replay per counted game. The
 count reads a fixed, evenly spaced sample of the training shards rather than the
-whole split, which would take days, so every share is an estimate. A reading
-that does not opt in does not slice by opening at all.
+whole split, which would take days, so every share is an estimate. The count
+is taken once per corpus and saved beside the shards it read, keyed by the
+corpus, the split, those shards, and the book, so a change to any of them counts
+again. A reading that does not opt in does not slice by opening at all.
 
 When it is asked for, every scored position carries its game's classified
 family, and the per-family table reports move loss, mask penalty, and top-k

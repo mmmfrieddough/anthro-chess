@@ -8,6 +8,8 @@ Accepted. Refines `0012-derived-evaluation-views.md`, which said derived
 benchmark inputs are never stored data. That still holds for views, which select
 games; it no longer holds for the rule-sensitive labels of the games a frozen
 pool already fixed.
+`0098-weighting-the-opening-down-buys-no-late-game-play.md` treats the
+opening-family count over a training corpus the same way.
 
 ## Context
 

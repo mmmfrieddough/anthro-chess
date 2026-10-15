@@ -76,7 +76,7 @@ from anthro_chess.evaluation.opening_frequency import (
     OpeningFrequency,
     OpeningFrequencyError,
     OpeningTailReading,
-    count_opening_families,
+    open_opening_frequency,
     read_opening_tail,
     sample_training_shards,
 )
@@ -1193,12 +1193,13 @@ def _count_training_frequency(
             "corpus is not on this machine"
         )
         return None
-    logger.info(
-        "Classifying the %s split of the training corpus by opening family",
-        leakage.training_split,
-    )
+    assert leakage.training_manifest_sha256 is not None  # same_source_corpus
     try:
-        return count_opening_families(paths, leakage.training_split)
+        return open_opening_frequency(
+            paths,
+            leakage.training_split,
+            corpus_sha256=leakage.training_manifest_sha256,
+        )
     except OpeningFrequencyError as error:
         raise CheckpointEvaluationError(str(error)) from error
 
