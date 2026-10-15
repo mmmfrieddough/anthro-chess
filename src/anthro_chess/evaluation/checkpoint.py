@@ -1169,26 +1169,32 @@ def _count_training_frequency(
     would mean a share of games no fingerprint records; `docs/evaluation.md`
     argues it. What settles the question is the training manifest the checkpoint
     recorded, so a ``leakage.training_normalized`` override still has to name a
-    copy of that corpus rather than a subset of it.
+    copy of that corpus rather than a subset of it. Where it is not, or is not
+    on this machine, the reading goes ahead without the axis.
     """
 
     if not config.openings.training_frequency:
         return None
     if not leakage.same_source_corpus:
-        raise CheckpointEvaluationError(
-            "the opening-frequency axis needs the checkpoint's training corpus "
-            "and this pool's source corpus to be the same one; they are not, "
-            "so a family's training share says nothing about the games scored"
+        logger.warning(
+            "Skipping the opening-frequency axis: the checkpoint's training "
+            "corpus is not the one this pool was drawn from, so a family's "
+            "training share says nothing about the games scored"
         )
+        return None
+    paths = [Path(path) for path in leakage.training_normalized_paths]
+    if not all(path.exists() for path in paths):
+        logger.warning(
+            "Skipping the opening-frequency axis: the checkpoint's training "
+            "corpus is not on this machine"
+        )
+        return None
     logger.info(
         "Classifying the %s split of the training corpus by opening family",
         leakage.training_split,
     )
     try:
-        return count_opening_families(
-            [Path(path) for path in leakage.training_normalized_paths],
-            leakage.training_split,
-        )
+        return count_opening_families(paths, leakage.training_split)
     except OpeningFrequencyError as error:
         raise CheckpointEvaluationError(str(error)) from error
 

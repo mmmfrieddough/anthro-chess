@@ -1202,9 +1202,8 @@ they are undertrained, and only the relationship between loss and *training*
 frequency separates the two. So the whole reading hangs off one opt-in: counting
 how often training saw each family, which costs a replay per counted game. The
 count reads a fixed, evenly spaced sample of the training shards rather than the
-whole split, which would take days; an arm reads only a small fraction of its
-split anyway, so every share is an estimate of what it saw. A reading that does
-not opt in does not slice by opening at all.
+whole split, which would take days, so every share is an estimate. A reading
+that does not opt in does not slice by opening at all.
 
 When it is asked for, every scored position carries its game's classified
 family, and the per-family table reports move loss, mask penalty, and top-k
@@ -1228,9 +1227,10 @@ tier and training share to join against its row in the slice table.
 
 A tier is a share of the *training* corpus, and a series fingerprint's data
 component covers only the games scored. Those two pin each other only when one
-corpus supplies both, so the reading is refused outright on a checkpoint that
-trained somewhere other than where the pool came from, rather than committing a
-series whose slice membership nothing recorded. For the same reason the tier
+corpus supplies both, so a checkpoint that trained somewhere other than where
+the pool came from is read without the axis, with a warning, rather than
+committing a series whose slice membership nothing recorded. So is one whose
+training corpus is not on the machine taking the reading. For the same reason the tier
 boundaries are code-owned rather than configurable: a configured boundary would
 move families between series without changing any metric identity.
 

@@ -74,9 +74,7 @@ OPENING_TIER_NAMES: tuple[str, ...] = (
 TAIL_SHARE_CEILING = dict(OPENING_FREQUENCY_TIERS)["uncommon_opening"]
 
 #: Training shards a count reads, spaced evenly through the corpus so that no one
-#: stretch of it stands for the whole. Every share is an estimate of what an arm
-#: saw, since an arm reads a small fraction of its split, and a replay of the
-#: whole split costs days of processor time where this costs minutes.
+#: stretch of it stands for the whole. A replay of every shard costs days.
 TRAINING_SAMPLE_SHARDS = 24
 
 
@@ -159,7 +157,7 @@ def count_opening_families(
     games = sum(counts.values())
     if not games:
         raise OpeningFrequencyError(
-            f"the training corpus holds no {split} split games to classify"
+            f"the sampled training shards hold no {split} split games to classify"
         )
     counts.pop(UNCLASSIFIED, None)
     return OpeningFrequency(
@@ -268,7 +266,7 @@ def read_opening_tail(
     Unnamed games carry no frequency, so they are left out entirely rather than
     entered at a share of zero: they would sit at the far end of the axis the
     slope is fitted over while saying nothing about how often any opening was
-    trained on. A family the training selection never held keeps its row and its
+    trained on. A family the count never saw keeps its row and its
     own tier, but a share of zero has no place on a log axis either, so the fit
     skips it too.
     """
