@@ -1825,6 +1825,14 @@ roots, so how that draw is composed reaches every fitted rating: which openings
 people play is a strong function of the clock, and a rating is a number in a
 pool rather than a point on one scale.
 
+**Every seat is shown one control of that class**, with both clocks absent,
+since the ladder runs none. A model that reads the control is then asked for a
+rating in the pool the openings come from, rather than for a blend across
+speeds. The control is part of what the ladder measured, so changing it starts
+new series. A model that reads no clock plays exactly what it played untimed.
+`docs/decisions/0099-the-rating-benchmarks-declare-the-control-of-their-games.md`
+says which control and why.
+
 **What naming them does not settle is the scale the fitted ratings sit on**, and
 the reading says so beside them. The openings decide what the seats play; what a
 *configured* rating meant was decided by the corpus the model trained on, and
@@ -1907,6 +1915,13 @@ benchmark reported such a reference and two distances from it until
 What survives is scale-free or stated in puzzle points: solve rates, the fitted
 puzzle rating each configured rating produces, the slope through those fits,
 and their pairwise ordering.
+
+**The puzzle reading declares no time control.** A puzzle is solved without a
+clock, its position may come from a game at any speed, and its rating is on the
+puzzle scale rather than in any game pool, so no control names what the reading
+is asked. A clock-reading model is therefore asked from its untimed input here.
+`docs/decisions/0099-the-rating-benchmarks-declare-the-control-of-their-games.md`
+records the choice.
 
 What this measures is calibration, not tactical strength. The quantity of
 interest is whether solve rate tracks configured rating the way human solve rate
@@ -2208,9 +2223,11 @@ lines, and drift away from human-like play.
 **The human reference is one population rather than a mixture of them.** Game
 length and how a game ends are strong functions of the clock, so a reference
 drawn from however the pool happens to be composed reports that composition as a
-distance. The harness plays untimed, so a speed class slices the reference
-rather than the model, and it is the class `anthro_chess.data.speed` derives
-from the game's own time control. The reference names a **rating pool** as well,
+distance. A speed class slices the reference, and it is the class
+`anthro_chess.data.speed` derives from the game's own time control. The seats
+and the opening walk are shown one control of that class, with both clocks
+absent because the harness runs none, so a model that reads the control plays
+the class it is compared against. The reference names a **rating pool** as well,
 because rating is this comparison's own axis: every reference game is placed at
 the mean of its two players' ratings, and numbers drawn from two pools are two
 scales plotted as one. **One class per reading**, so a population the pool holds

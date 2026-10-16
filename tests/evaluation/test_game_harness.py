@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import chess
 import pytest
 import torch
+from tiny_models import tiny_model_config
 
 from anthro_chess.chess import (
     ACTION_VOCABULARY_SIZE,
@@ -12,7 +13,7 @@ from anthro_chess.chess import (
     RESIGNATION_ACTION_ID,
     encode_move,
 )
-from anthro_chess.data import DecisionContext
+from anthro_chess.data import UNTIMED, DecisionContext, DecisionTime, Speed
 from anthro_chess.evaluation.games import (
     ExternalEnginePlayer,
     GamePlayer,
@@ -25,11 +26,14 @@ from anthro_chess.evaluation.games import (
     RandomPlayer,
     StartPosition,
     collapse_replicates,
+    declared_time,
     generate_games,
     prefix_positions,
+    require_control_in_speed,
     standard_positions,
 )
 from anthro_chess.evaluation.results import CheckpointReference
+from anthro_chess.models import MoveModel, MoveModelBatch
 from anthro_chess.runtime import ActionModelRunner, RuntimeConfig
 
 #: Position after 1. f3 e5 2. g4, where Qh4 is mate.
@@ -61,6 +65,25 @@ class TrajectoryRunner:
             len(context.plies) * 1000 + (context.target_rating or 0)
         )
         return torch.randn(ACTION_VOCABULARY_SIZE, generator=generator)
+
+
+@dataclass
+class TinyModelRunner:
+    """A real untrained model, keeping every row of logits it was asked for."""
+
+    model: MoveModel
+    logits: list[torch.Tensor] = field(default_factory=list)
+    times: list[DecisionTime] = field(default_factory=list)
+
+    def predict(self, context: DecisionContext) -> torch.Tensor:
+        self.times.append(context.time)
+        with torch.no_grad():
+            logits: torch.Tensor = self.model(
+                MoveModelBatch.from_decision_context(context)
+            )
+        row = logits[0, -1]
+        self.logits.append(row)
+        return row
 
 
 @dataclass
@@ -111,6 +134,7 @@ def _model(
     runner: ActionModelRunner | None = None,
     resignation: bool = False,
     draw_claim: bool = False,
+    time: DecisionTime = UNTIMED,
 ) -> ModelPlayer:
     return ModelPlayer(
         runner or TrajectoryRunner(),
@@ -121,6 +145,7 @@ def _model(
             resignation_enabled=resignation,
             draw_claim_enabled=draw_claim,
         ),
+        time=time,
     )
 
 
@@ -232,6 +257,57 @@ def test_a_checkpoint_identity_travels_with_the_seat() -> None:
 
     assert record.white.checkpoint is not None
     assert record.white.checkpoint.step == 100
+
+
+def test_a_declared_control_reaches_every_decision_with_the_clocks_absent() -> None:
+    runner = TinyModelRunner(MoveModel(tiny_model_config()).eval())
+    blitz = declared_time("180+2")
+
+    (record,) = _play(
+        _model(runner=runner, time=blitz),
+        _model(runner=runner, label="other", time=blitz),
+    )
+
+    assert blitz == DecisionTime(initial_ms=180_000, increment_ms=2_000)
+    assert set(runner.times) == {blitz}
+    # What the seat was shown is part of what reproduces its game.
+    assert DecisionTime(**record.white.configuration["time"]) == blitz
+    (untimed,) = _play(_model(), _model(label="other"))
+    assert "time" not in untimed.white.configuration
+
+
+@pytest.mark.parametrize("clock_inputs", [True, False])
+def test_only_a_model_reading_the_clock_plays_a_declared_control_differently(
+    clock_inputs: bool,
+) -> None:
+    torch.manual_seed(3)
+    model = MoveModel(tiny_model_config(clock_inputs=clock_inputs)).eval()
+
+    def play(time: DecisionTime) -> tuple[GameRecord, TinyModelRunner]:
+        runner = TinyModelRunner(model)
+        (record,) = _play(
+            _model(runner=runner, time=time),
+            _model(runner=runner, label="other", time=time),
+        )
+        return record, runner
+
+    untimed, untimed_runner = play(UNTIMED)
+    blitz, blitz_runner = play(declared_time("180+0"))
+    first_decision_agrees = torch.equal(
+        untimed_runner.logits[0], blitz_runner.logits[0]
+    )
+    assert first_decision_agrees is not clock_inputs
+    if not clock_inputs:
+        assert untimed.action_ids == blitz.action_ids
+        assert untimed.decisions == blitz.decisions
+
+
+def test_a_control_outside_the_speed_its_games_are_drawn_at_is_refused() -> None:
+    require_control_in_speed("180+0", Speed.BLITZ)
+    require_control_in_speed("60+0", None)
+
+    with pytest.raises(ValueError, match="bullet"):
+        require_control_in_speed("60+0", Speed.BLITZ)
 
 
 def test_a_frozen_prefix_is_continued_rather_than_replayed_as_decisions() -> None:

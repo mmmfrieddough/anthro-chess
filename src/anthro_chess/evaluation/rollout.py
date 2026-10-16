@@ -87,6 +87,7 @@ from anthro_chess.chess import (
     is_terminal_action,
 )
 from anthro_chess.config import ConfigModel, ResolvedConfig
+from anthro_chess.data import DecisionTime
 from anthro_chess.data.schema import (
     NormalizedColumn,
     row_game_id,
@@ -124,11 +125,15 @@ from anthro_chess.evaluation.games import (
     ModelPlayer,
     PlayerError,
     StartPosition,
+    TimeControl,
     analyze_games,
     collapse_replicates,
+    control_workload,
+    declared_time,
     generate_games,
     prefix_positions,
     replicates_vary,
+    require_control_in_speed,
     standard_positions,
     summarize_games,
 )
@@ -420,6 +425,10 @@ class RolloutBenchmarkConfig(CheckpointSelection, PoolGenerationPin):
     #: be overridden; the rest, such as whether resignation is enabled, applies
     #: to the whole suite and joins the declared workload.
     runtime: RuntimeConfig = RuntimeConfig()
+    #: The control every seat and the opening walk are shown, with both clocks
+    #: absent because nothing here runs one. Absent plays untimed. It must band
+    #: into the speed class each pool view is drawn at.
+    time_control: TimeControl | None = None
     grid: RolloutGridConfig = RolloutGridConfig()
     generation: GenerationConfig = GenerationConfig()
     arms: tuple[RolloutArm, ...] = (RolloutArm.STANDARD_START,)
@@ -478,6 +487,9 @@ class RolloutBenchmarkConfig(CheckpointSelection, PoolGenerationPin):
                 self.grid.target_ratings,
                 max(DECLARED_NEIGHBOURS.values()),
             )
+            require_control_in_speed(self.time_control, self.reference.view.speed)
+        if RolloutArm.HUMAN_PREFIX in self.arms:
+            require_control_in_speed(self.time_control, self.prefix.view.speed)
         return self
 
 
@@ -1205,6 +1217,7 @@ def _measure_cell(
         label=f"{checkpoint.label}-r{target_rating}-t{temperature:g}",
         config=runtime,
         checkpoint=checkpoint,
+        time=declared_time(config.time_control),
     )
     # One configuration in both seats, so the cell's own temperature is the
     # whole of what decides whether its replicates differ.
@@ -1996,7 +2009,9 @@ def _exact_repertoire(
                 (
                     rating,
                     walk_repertoire(
-                        _walk_policy(runner, runtime),
+                        _walk_policy(
+                            runner, runtime, declared_time(config.time_control)
+                        ),
                         plies=plies,
                         threshold=config.walk.threshold,
                         level=level,
@@ -2068,6 +2083,7 @@ def _exact_repertoire(
 def _walk_policy(
     runner: ActionModelRunner,
     runtime: RuntimeConfig,
+    time: DecisionTime,
 ) -> ActionPolicy:
     """Return the policy an opening-tree walk asks for its move distributions.
 
@@ -2088,7 +2104,7 @@ def _walk_policy(
         live = [
             index for index, session in enumerate(sessions) if not session.is_terminal
         ]
-        contexts = [sessions[index].decision_context() for index in live]
+        contexts = [sessions[index].decision_context(time) for index in live]
         if isinstance(runner, BatchedActionModelRunner) and len(contexts) > 1:
             logits = runner.predict_batch(contexts)
             if len(logits) != len(contexts):
@@ -2336,6 +2352,7 @@ def _execution_record(
             "claim_draws": config.generation.claim_draws,
             "resignation_enabled": config.runtime.resignation_enabled,
             "draw_claim_enabled": config.runtime.draw_claim_enabled,
+            **control_workload(config.time_control),
             "opening_level": config.opening_level.value,
         },
         cpu_threads=cpu_threads,

@@ -4,7 +4,9 @@ Date: 2026-10-10
 
 ## Status
 
-Accepted. Answers `#497`.
+Accepted. Answers `#497`. Refined by
+`0099-the-rating-benchmarks-declare-the-control-of-their-games.md`, which
+serves the declared-control context to the rating benchmarks.
 
 ## Context
 

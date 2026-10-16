@@ -97,10 +97,14 @@ from anthro_chess.evaluation.games import (
     ModelPlayer,
     PlayerError,
     StartPosition,
+    TimeControl,
     collapse_replicates,
+    control_workload,
+    declared_time,
     generate_games,
     prefix_positions,
     replicates_vary,
+    require_control_in_speed,
     standard_positions,
 )
 from anthro_chess.evaluation.noise import NoiseConfig
@@ -419,6 +423,10 @@ class LadderBenchmarkConfig(CheckpointSelection):
     #: and seed are supplied per seat and per game, so setting them here would
     #: be overridden; the rest applies to the whole ladder.
     runtime: RuntimeConfig = RuntimeConfig()
+    #: The control every seat is shown, with both clocks absent because nothing
+    #: here runs one. Absent seats every competitor untimed. With openings
+    #: drawn from a pool, it must band into the speed class they are drawn at.
+    time_control: TimeControl | None = None
     grid: LadderGridConfig = LadderGridConfig()
     generation: GenerationConfig = GenerationConfig()
     openings: LadderOpeningsConfig = LadderOpeningsConfig()
@@ -434,6 +442,12 @@ class LadderBenchmarkConfig(CheckpointSelection):
     #: Processes playing pairings at once. One plays everything in this
     #: process, which is what a supplied runner forces.
     workers: Annotated[StrictInt, Field(ge=1)] = 8
+
+    @model_validator(mode="after")
+    def _validate_time_control(self) -> LadderBenchmarkConfig:
+        if self.openings.pool is not None:
+            require_control_in_speed(self.time_control, self.openings.view.speed)
+        return self
 
 
 @dataclass(frozen=True)
@@ -1203,6 +1217,7 @@ def _seat_everyone(
                 label=labels[seat],
                 config=_seat_runtime(config, seat),
                 checkpoint=identity,
+                time=declared_time(config.time_control),
             )
             for seat in seats
         },
@@ -2055,6 +2070,7 @@ def _base_workload(
         "fit_model": FIT_MODEL,
         "fit_scale": RATING_SCALE,
         "fit_maximum_spread": config.fit.maximum_spread,
+        **control_workload(config.time_control),
         "maximum_generated_plies": config.generation.maximum_generated_plies,
         "swap_colors": config.generation.swap_colors,
         "claim_draws": config.generation.claim_draws,

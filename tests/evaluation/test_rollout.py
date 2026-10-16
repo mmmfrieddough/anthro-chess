@@ -6,7 +6,7 @@ import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
@@ -22,7 +22,7 @@ from anthro_chess.chess import (
     encode_move,
 )
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
-from anthro_chess.data import DecisionContext
+from anthro_chess.data import DecisionContext, DecisionTime
 from anthro_chess.data.schema import NormalizedColumn
 from anthro_chess.evaluation import PoolConfig, freeze_pool
 from anthro_chess.evaluation import rollout as rollout_module
@@ -101,6 +101,17 @@ class TrajectoryRunner:
             len(context.plies) * 1000 + (context.target_rating or 0)
         )
         return torch.randn(ACTION_VOCABULARY_SIZE, generator=generator)
+
+
+@dataclass
+class TimeRecordingRunner(TrajectoryRunner):
+    """The trajectory policy, keeping what each decision knew of the time."""
+
+    times: list[DecisionTime] = field(default_factory=list)
+
+    def predict(self, context: DecisionContext) -> torch.Tensor:
+        self.times.append(context.time)
+        return super().predict(context)
 
 
 @dataclass
@@ -466,7 +477,7 @@ def test_the_reference_is_read_at_one_speed_class(
     mixed_speed_reference_pool: Path,
     small_bandwidth: None,
 ) -> None:
-    """The harness plays untimed, so the class slices the reference.
+    """The harness runs no clock, so the class slices the reference.
 
     Length and result are strong functions of the clock, so a reference drawn
     from a mixed pool would report its composition as a distance.
@@ -1779,6 +1790,53 @@ def test_the_exact_walk_is_its_own_series_apart_from_the_curves(
     assert reading.exact is not None
     assert reading.exact.execution.workload_sha256 != reading.execution.workload_sha256
     assert reading.exact.execution.workload["walk_plies"] == reading.exact.plies
+
+
+def test_the_games_and_the_walk_are_shown_the_declared_control(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    runner = TimeRecordingRunner()
+
+    result = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800)},
+            time_control="180+0",
+        ),
+        runner=runner,
+    )
+
+    (reading,) = result.readings
+    assert reading.exact is not None
+    assert set(runner.times) == {DecisionTime(initial_ms=180_000, increment_ms=0)}
+    assert reading.exact.execution.workload["time_control"] == "180+0"
+
+
+def test_a_declared_control_starts_a_new_series() -> None:
+    """A model reading the clock plays a declared control differently."""
+
+    untimed = _run(_config())
+    blitz = _run(_config(time_control="180+0"))
+
+    assert (
+        untimed.cells[0].execution.workload_sha256
+        != blitz.cells[0].execution.workload_sha256
+    )
+
+
+def test_a_control_outside_the_reference_speed_is_refused() -> None:
+    reference = {"view": {"name": "rollout-reference", "speed": "blitz"}}
+
+    with pytest.raises(ValidationError, match="bullet"):
+        _compared(Path("pool"), reference=reference, time_control="60+0")
+    with pytest.raises(ValidationError, match="bullet"):
+        _config(
+            pool="pool",
+            arms=("human-prefix",),
+            prefix={"view": {"name": "rollout-prefix", "speed": "blitz"}},
+            time_control="60+0",
+        )
 
 
 def test_the_exact_walk_reports_the_bound_its_pruning_implies(

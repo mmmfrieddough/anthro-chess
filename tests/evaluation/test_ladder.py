@@ -6,7 +6,7 @@ import itertools
 import json
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
@@ -19,7 +19,7 @@ from anthro_chess.chess import (
     RESIGNATION_ACTION_ID,
 )
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
-from anthro_chess.data import DecisionContext, Speed
+from anthro_chess.data import DecisionContext, DecisionTime, Speed
 from anthro_chess.evaluation import PoolConfig, freeze_pool
 from anthro_chess.evaluation import ladder as ladder_module
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
@@ -95,6 +95,17 @@ class GradedRunner:
         logits = torch.full((ACTION_VOCABULARY_SIZE,), (rating - 2000) / 500.0)
         logits[RESIGNATION_ACTION_ID] = 0.0
         return logits
+
+
+@dataclass
+class TimeRecordingRunner(GradedRunner):
+    """The graded policy, keeping what each decision knew of the time."""
+
+    times: list[DecisionTime] = field(default_factory=list)
+
+    def predict(self, context: DecisionContext) -> torch.Tensor:
+        self.times.append(context.time)
+        return super().predict(context)
 
 
 @dataclass
@@ -441,6 +452,45 @@ def test_the_openings_are_drawn_at_one_speed_class(
                 }
             )
         )
+
+
+def test_every_seat_is_shown_the_declared_control_with_the_clocks_absent() -> None:
+    runner = TimeRecordingRunner()
+
+    result = _run(_config(time_control="180+0"), runner=runner)
+
+    # The ablated arm too: it is the control for rating, not for time.
+    assert any(
+        seat.key.conditioning is SeatConditioning.ABLATED for seat in result.seats
+    )
+    assert set(runner.times) == {DecisionTime(initial_ms=180_000, increment_ms=0)}
+
+
+def test_a_declared_control_ends_every_seat_series(tmp_path: Path) -> None:
+    """A model reading the clock plays a declared control differently."""
+
+    untimed = _run(
+        _config(),
+        store=ResultsStore(tmp_path / "untimed"),
+        detail=DetailStore(tmp_path / "untimed-detail"),
+    )
+    blitz = _run(
+        _config(time_control="180+0"),
+        store=ResultsStore(tmp_path / "blitz"),
+        detail=DetailStore(tmp_path / "blitz-detail"),
+    )
+
+    seat = SeatKey(SeatConditioning.CONDITIONED, 1200, 1.0)
+    assert _fingerprint(untimed, seat) != _fingerprint(blitz, seat)
+
+
+def test_a_control_outside_the_speed_the_openings_are_drawn_at_is_refused() -> None:
+    openings = {"pool": "pool", "view": {"name": "ladder-openings", "speed": "blitz"}}
+
+    with pytest.raises(ValidationError, match="bullet"):
+        _config(openings=openings, time_control="60+0")
+    with pytest.raises(ValidationError, match="names no clock"):
+        _config(time_control="-")
 
 
 def test_openings_from_a_pool_this_ladder_is_not_defined_over_are_refused(
