@@ -81,9 +81,9 @@ class RatingEmbedding(nn.Module):
         self.unrated = nn.Parameter(torch.empty(config.model_dim))
         for anchor in (self.weak, self.strong, self.unrated):
             nn.init.normal_(anchor, std=0.02)
-        self.arc = config.rating_path == "arc"
-        if self.arc:
-            # The anchors' starting length, so an arc starts where a line would.
+        self.path = config.rating_path
+        if self.path in ("arc", "fixed"):
+            # The anchors' starting length, so the path starts where a line would.
             self.length = nn.Parameter(torch.tensor(0.02 * config.model_dim**0.5))
 
     def forward(self, rating: OptionalTensor) -> Tensor:
@@ -95,10 +95,12 @@ class RatingEmbedding(nn.Module):
             .clamp(0.0, 1.0)
             .unsqueeze(-1)
         )
-        if self.arc:
+        if self.path == "arc":
             placed = self.length * _slerp(self.weak, self.strong, 1.0 - weakness)
         else:
             placed = weakness * self.weak + (1.0 - weakness) * self.strong
+            if self.path == "fixed":
+                placed = self.length * F.normalize(placed, dim=-1)
         return torch.where(rating.present.unsqueeze(-1), placed, self.unrated)
 
 

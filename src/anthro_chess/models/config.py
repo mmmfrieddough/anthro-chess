@@ -48,9 +48,10 @@ class MoveModelConfig(ConfigModel):
     #: How the rating reaches the trunk. ``line`` adds a vector placed on the
     #: segment between two anchors to every square token, so its length varies
     #: with the rating; ``arc`` turns between the anchors' directions at one
-    #: learned length; ``modulation`` leaves the tokens alone and scales and
-    #: shifts every block's normalized input instead.
-    rating_path: Literal["line", "arc", "modulation"] = "line"
+    #: learned length; ``fixed`` takes the line's direction at one learned
+    #: length; ``modulation`` leaves the tokens alone and scales and shifts
+    #: every block's normalized input instead.
+    rating_path: Literal["line", "arc", "fixed", "modulation"] = "line"
     #: ``post`` normalizes after each residual sum and not the embedding, as
     #: Chessformer does; ``pre`` normalizes the embedding and each sublayer's
     #: input.

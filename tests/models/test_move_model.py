@@ -609,11 +609,10 @@ def test_the_dial_still_moves_at_the_strongest_ratings_the_corpus_holds() -> Non
     assert torch.all(steps.norm(dim=-1) > 0.0)
 
 
-def test_an_arc_turns_the_rating_without_changing_its_length() -> None:
+@pytest.mark.parametrize("path", ["arc", "fixed"])
+def test_a_fixed_length_path_turns_the_rating_without_resizing_it(path: str) -> None:
     torch.manual_seed(23)
-    embedding = RatingEmbedding(
-        _tiny_config().model_copy(update={"rating_path": "arc"})
-    )
+    embedding = RatingEmbedding(_tiny_config().model_copy(update={"rating_path": path}))
     ratings = torch.tensor([[0, 800, 1600, 2400, 3200, 5000]])
 
     with torch.no_grad():
