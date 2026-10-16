@@ -382,7 +382,8 @@ a reading or a recorded decision rather than a judgement that enough was done.
 9. **The run.**
 
 Steps 1 through 4 are reference-frame work and belong before any reading
-accumulates. Steps 5 onward are readings.
+accumulates. Steps 5 onward are readings. A candidate that adds a loss changes
+what step 6 measured, so the target's rate is re-checked with it before step 8.
 
 ## What Remains Open
 
