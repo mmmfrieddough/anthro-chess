@@ -8,6 +8,7 @@ import pytest
 import torch
 import torch._dynamo
 from torch._dynamo.testing import CompileCounter
+from torch.nn import functional as F
 
 from anthro_chess.chess import (
     ACTION_VOCABULARY_SIZE,
@@ -446,13 +447,33 @@ def test_the_identity_carries_every_value_needed_to_rebuild_the_model() -> None:
     config_record = MoveModel(config).identity()["config"]
 
     assert config_record == config.model_dump(
-        mode="json", exclude={"clock_inputs", "clock_dropout"}
+        mode="json",
+        exclude={"clock_inputs", "clock_dropout", "rating_path", "block_norm"},
     )
     assert MoveModelConfig.model_validate(config_record) == config
     assert (
         MoveModel(_tiny_config(history_positions=4)).identity()
         != MoveModel(config).identity()
     )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"rating_path": "arc"}, {"rating_path": "modulation"}, {"block_norm": "post"}],
+)
+def test_an_architecture_away_from_the_default_names_itself(
+    change: dict[str, str],
+) -> None:
+    config = _tiny_config().model_copy(update=change)
+    record = cast(dict[str, object], MoveModel(config).identity()["config"])
+
+    assert all(record[name] == value for name, value in change.items())
+    assert MoveModelConfig.model_validate(record) == config
+
+
+def test_rating_modulation_needs_a_pre_norm_block() -> None:
+    with pytest.raises(ValueError, match="pre-norm"):
+        MoveModelConfig(rating_path="modulation", block_norm="post")
 
 
 def test_future_context_does_not_change_earlier_predictions() -> None:
@@ -586,6 +607,72 @@ def test_the_dial_still_moves_at_the_strongest_ratings_the_corpus_holds() -> Non
 
     steps = placed[0, 1:] - placed[0, :-1]
     assert torch.all(steps.norm(dim=-1) > 0.0)
+
+
+def test_an_arc_turns_the_rating_without_changing_its_length() -> None:
+    torch.manual_seed(23)
+    embedding = RatingEmbedding(
+        _tiny_config().model_copy(update={"rating_path": "arc"})
+    )
+    ratings = torch.tensor([[0, 800, 1600, 2400, 3200, 5000]])
+
+    with torch.no_grad():
+        placed = embedding(
+            OptionalTensor(ratings, torch.ones_like(ratings, dtype=torch.bool))
+        )
+        toward_strong = placed[0] @ F.normalize(embedding.strong, dim=-1)
+
+    lengths = placed[0].norm(dim=-1)
+    torch.testing.assert_close(lengths, lengths[0].expand_as(lengths))
+    assert torch.all(toward_strong[1:] > toward_strong[:-1])
+
+
+@pytest.mark.parametrize(
+    "change", [{"rating_path": "modulation"}, {"block_norm": "post"}]
+)
+def test_the_rating_still_reaches_the_squares_on_every_path(
+    change: dict[str, str],
+) -> None:
+    torch.manual_seed(29)
+    model = MoveModel(_tiny_config().model_copy(update=change)).eval()
+    for block in model.blocks:
+        modulation = cast(ResidualBlock, block).modulation
+        if modulation is not None:
+            torch.nn.init.normal_(modulation.weight, std=0.1)
+    weak, strong = _rated_pair()
+    decisions = torch.arange(3).unsqueeze(0)
+
+    with torch.no_grad():
+        weak_squares = model.encode(weak, decisions)
+        strong_squares = model.encode(strong, decisions)
+
+    assert not torch.equal(weak_squares, strong_squares)
+
+
+def test_a_fresh_modulated_block_ignores_the_rating() -> None:
+    """Zero-initialized, so training adds the rating to a working model."""
+
+    torch.manual_seed(31)
+    model = MoveModel(
+        _tiny_config().model_copy(update={"rating_path": "modulation"})
+    ).eval()
+    weak, strong = _rated_pair()
+
+    with torch.no_grad():
+        weak_logits = model(weak)
+        strong_logits = model(strong)
+
+    torch.testing.assert_close(weak_logits, strong_logits, rtol=0.0, atol=0.0)
+
+
+def _rated_pair() -> tuple[MoveModelBatch, MoveModelBatch]:
+    moves = ("e2e4", "e7e5", "g1f3")
+    return tuple(  # type: ignore[return-value]
+        MoveModelBatch.from_sequence_batch(
+            _sequence_batch(moves, white_rating=rating, black_rating=rating)
+        )
+        for rating in (800, 2400)
+    )
 
 
 def test_an_absent_rating_is_its_own_embedding_rather_than_a_rating_of_zero() -> None:

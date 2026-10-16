@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field, model_validator
 
 from anthro_chess.config import ConfigModel
@@ -43,6 +45,16 @@ class MoveModelConfig(ConfigModel):
     #: without the initial one. The corpus presents almost none of these on its
     #: own.
     clock_dropout: float = Field(default=0.05, ge=0.0, le=1.0)
+    #: How the rating reaches the trunk. ``line`` adds a vector placed on the
+    #: segment between two anchors to every square token, so its length varies
+    #: with the rating; ``arc`` turns between the anchors' directions at one
+    #: learned length; ``modulation`` leaves the tokens alone and scales and
+    #: shifts every block's normalized input instead.
+    rating_path: Literal["line", "arc", "modulation"] = "line"
+    #: ``post`` normalizes after each residual sum and not the embedding, as
+    #: Chessformer does; ``pre`` normalizes the embedding and each sublayer's
+    #: input.
+    block_norm: Literal["pre", "post"] = "pre"
 
     @model_validator(mode="after")
     def validate_attention_shape(self) -> MoveModelConfig:
@@ -50,4 +62,6 @@ class MoveModelConfig(ConfigModel):
 
         if self.model_dim % self.attention_heads:
             raise ValueError("model_dim must be divisible by attention_heads")
+        if self.rating_path == "modulation" and self.block_norm == "post":
+            raise ValueError("rating modulation reads a pre-norm block's input")
         return self

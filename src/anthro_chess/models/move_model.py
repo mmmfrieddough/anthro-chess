@@ -59,6 +59,7 @@ _CLOCK_FEATURE_COUNT = 6
 #: Fields a model reading no clock leaves out of its identity, so that it is
 #: still the identity every run recorded before they existed.
 _CLOCK_CONFIG_FIELDS = ("clock_inputs", "clock_dropout")
+_ARCHITECTURE_DEFAULTS = {"rating_path": "line", "block_norm": "pre"}
 
 
 class RatingEmbedding(nn.Module):
@@ -80,6 +81,10 @@ class RatingEmbedding(nn.Module):
         self.unrated = nn.Parameter(torch.empty(config.model_dim))
         for anchor in (self.weak, self.strong, self.unrated):
             nn.init.normal_(anchor, std=0.02)
+        self.arc = config.rating_path == "arc"
+        if self.arc:
+            # The anchors' starting length, so an arc starts where a line would.
+            self.length = nn.Parameter(torch.tensor(0.02 * config.model_dim**0.5))
 
     def forward(self, rating: OptionalTensor) -> Tensor:
         """Return one embedding per decision, shaped batch by decision by width."""
@@ -90,8 +95,23 @@ class RatingEmbedding(nn.Module):
             .clamp(0.0, 1.0)
             .unsqueeze(-1)
         )
-        placed = weakness * self.weak + (1.0 - weakness) * self.strong
+        if self.arc:
+            placed = self.length * _slerp(self.weak, self.strong, 1.0 - weakness)
+        else:
+            placed = weakness * self.weak + (1.0 - weakness) * self.strong
         return torch.where(rating.present.unsqueeze(-1), placed, self.unrated)
+
+
+def _slerp(start: Tensor, end: Tensor, fraction: Tensor) -> Tensor:
+    """Return the unit vector ``fraction`` of the way along the arc between two."""
+
+    start = F.normalize(start, dim=-1)
+    end = F.normalize(end, dim=-1)
+    # Clamped short of parallel, where the arc's denominator vanishes.
+    angle = torch.acos((start * end).sum().clamp(-1.0 + 1e-6, 1.0 - 1e-6))
+    return (
+        torch.sin((1.0 - fraction) * angle) * start + torch.sin(fraction * angle) * end
+    ) / torch.sin(angle)
 
 
 class ClockEmbedding(nn.Module):
@@ -217,8 +237,14 @@ class SquareTokenEncoder(nn.Module):
             bias=False,
         )
         self.position_projection = nn.Linear(position_dim, config.model_dim)
-        self.normalization = nn.LayerNorm(config.model_dim)
-        self.rating_embedding = RatingEmbedding(config)
+        self.normalization: nn.Module = (
+            nn.LayerNorm(config.model_dim)
+            if config.block_norm == "pre"
+            else nn.Identity()
+        )
+        self.rating_embedding = (
+            RatingEmbedding(config) if config.rating_path != "modulation" else None
+        )
         self.clock_embedding = ClockEmbedding(config) if config.clock_inputs else None
         # Derived constants, not state: pure functions of the encoding, so they
         # do not belong in a checkpoint.
@@ -294,8 +320,9 @@ class SquareTokenEncoder(nn.Module):
         )
         tokens = tokens + self.position_projection(position).unsqueeze(-2)
         tokens = tokens + self.square_identity
-        rating = _at_decision_optional(inputs.target_rating, decisions)
-        tokens = tokens + self.rating_embedding(rating).unsqueeze(-2)
+        if self.rating_embedding is not None:
+            rating = _at_decision_optional(inputs.target_rating, decisions)
+            tokens = tokens + self.rating_embedding(rating).unsqueeze(-2)
         if self.clock_embedding is not None:
             tokens = tokens + self.clock_embedding(batch, decisions).unsqueeze(-2)
         return cast(Tensor, self.normalization(tokens))
@@ -417,10 +444,18 @@ class SpatialAttention(nn.Module):
 
 
 class ResidualBlock(nn.Module):
-    """One pre-norm residual pair: spatial attention, then a feed-forward."""
+    """One residual pair: spatial attention, then a feed-forward."""
 
     def __init__(self, config: MoveModelConfig) -> None:
         super().__init__()
+        self.post_norm = config.block_norm == "post"
+        # Zero, so a fresh block is the unconditioned one and the rating is
+        # something training adds.
+        self.modulation: nn.Linear | None = None
+        if config.rating_path == "modulation":
+            self.modulation = nn.Linear(config.model_dim, 4 * config.model_dim)
+            nn.init.zeros_(self.modulation.weight)
+            nn.init.zeros_(self.modulation.bias)
         self.attention_norm = nn.LayerNorm(config.model_dim)
         self.attention = SpatialAttention(config)
         self.feedforward_norm = nn.LayerNorm(config.model_dim)
@@ -433,15 +468,37 @@ class ResidualBlock(nn.Module):
         # Dropout carries no state, so both residuals read the same module.
         self.residual_dropout = nn.Dropout(config.dropout)
 
-    def forward(self, hidden: Tensor, templates: Tensor) -> Tensor:
+    def forward(
+        self, hidden: Tensor, templates: Tensor, condition: Tensor | None = None
+    ) -> Tensor:
         """Return the block's output for a whole batch of positions."""
 
+        if self.post_norm:
+            hidden = self.attention_norm(
+                hidden + self.residual_dropout(self.attention(hidden, templates))
+            )
+            return cast(
+                Tensor,
+                self.feedforward_norm(
+                    hidden + self.residual_dropout(self.feedforward(hidden))
+                ),
+            )
+        attention_input = self.attention_norm(hidden)
+        feedforward_scale = feedforward_shift = None
+        if self.modulation is not None and condition is not None:
+            scale, shift, feedforward_scale, feedforward_shift = (
+                self.modulation(F.silu(condition)).unsqueeze(-2).chunk(4, dim=-1)
+            )
+            attention_input = attention_input * (1.0 + scale) + shift
         hidden = hidden + self.residual_dropout(
-            self.attention(self.attention_norm(hidden), templates)
+            self.attention(attention_input, templates)
         )
-        hidden = hidden + self.residual_dropout(
-            self.feedforward(self.feedforward_norm(hidden))
-        )
+        feedforward_input = self.feedforward_norm(hidden)
+        if feedforward_scale is not None and feedforward_shift is not None:
+            feedforward_input = (
+                feedforward_input * (1.0 + feedforward_scale) + feedforward_shift
+            )
+        hidden = hidden + self.residual_dropout(self.feedforward(feedforward_input))
         return hidden
 
 
@@ -536,6 +593,11 @@ class MoveModel(nn.Module):
         self.blocks = nn.ModuleList(
             ResidualBlock(self.config) for _ in range(self.config.layers)
         )
+        self.rating_condition = (
+            RatingEmbedding(self.config)
+            if self.config.rating_path == "modulation"
+            else None
+        )
         # A pre-norm block leaves its output unnormalized for whatever follows,
         # so the stack ends with one. Named rather than the last element of a
         # sequence, because a checkpoint key that moves with the layer count
@@ -576,8 +638,12 @@ class MoveModel(nn.Module):
 
         tokens = self.square_encoder(batch, decisions)
         positions = tokens.flatten(0, 1)
+        condition = None
+        if self.rating_condition is not None:
+            rating = _at_decision_optional(batch.inputs.target_rating, decisions)
+            condition = self.rating_condition(rating).flatten(0, 1)
         for block in self.blocks:
-            positions = block(positions, self.bias_templates)
+            positions = block(positions, self.bias_templates, condition)
         return cast(
             Tensor,
             self.norm(positions).unflatten(0, tokens.shape[:2]),
@@ -624,10 +690,7 @@ def model_identity(config: MoveModelConfig) -> dict[str, object]:
         # pass, history stacked into the square tokens, and the board flipped to
         # the side to move. No version 6 checkpoint can be read.
         "version": 7,
-        "config": config.model_dump(
-            mode="json",
-            exclude=None if config.clock_inputs else set(_CLOCK_CONFIG_FIELDS),
-        ),
+        "config": config.model_dump(mode="json", exclude=_unread_fields(config)),
         "action_vocabulary": action_vocabulary_identity(),
         "encoding": encoding_identity(),
         "rating_conditioning": "square-token-input-embedding",
@@ -639,6 +702,16 @@ def model_identity(config: MoveModelConfig) -> dict[str, object]:
         "timing_inputs": config.clock_inputs,
         "timing_head": False,
     }
+
+
+def _unread_fields(config: MoveModelConfig) -> set[str]:
+    """Return the configuration fields left out of a model's identity."""
+
+    unread = set() if config.clock_inputs else set(_CLOCK_CONFIG_FIELDS)
+    for name, default in _ARCHITECTURE_DEFAULTS.items():
+        if getattr(config, name) == default:
+            unread.add(name)
+    return unread
 
 
 def _at_decision(values: Tensor, decisions: Tensor) -> Tensor:
