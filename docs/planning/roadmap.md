@@ -204,10 +204,11 @@ is what makes its improvement readable without spending a target-scale run on it
 Because arms against a frozen base yield no interaction terms, the accepted set
 runs together as one further arm before any of it reaches the canonical line.
 
-**A confirmation run then reads the target size at a fraction of its budget**,
-which holds the size term fixed and removes the hardest extrapolation, before the
-full run. A confirmation that misses its predicted loss is a confound rather than
-a surprise, and is cheaper to find there than in the run itself.
+**The stage closes on that combined arm rather than on the target run.** The run
+follows the move-time head in stage 6, so one run at the target size carries both
+heads. Run here, it would be followed by a second run of the same size once the
+model writes time, and the budget buys more than two weeks on both cards. The
+combined arm is read again there with the time head in it.
 
 Distribution replicates the model rather than sharding it, so it buys throughput
 and not capacity, and the per-card memory ceiling still bounds how large a model
@@ -249,6 +250,10 @@ format needing someone else's runtime. Both of its uses cost more than a
 conventional anchor does: a foreign checkpoint needs an action-vocabulary
 mapping and a provenance path, and a model that conditions on its opponent's
 rating needs a declared convention for what it is told.
+
+The second reference is read before the combined arm closes the stage. Whether
+another rating-conditioned model's dial reads wider than this one's on the same
+ladder decides whether the dial still needs recipe work before the run.
 
 Timing is not one piece of work, and its parts have different deadlines. The
 model learns to read time in this stage and to write it in the next, and the
@@ -298,9 +303,8 @@ worked example of the pattern.
 
 **Writing time belongs to stage 6.** The move-time head is a second output head,
 a second masked loss, its own diagnostics, and clock handling at the UCI
-boundary — a feature rather than a scaling step. `docs/data.md` also places
-useful timing conditioning at a corpus scale beyond where this stage's depth
-pass lands. Timing diagnostics arrive with it.
+boundary: a feature rather than a scaling step, and timing diagnostics arrive
+with it.
 
 Evaluation should guide this work. New data, model changes, and runtime changes
 should be judged by the same benchmark surfaces whenever possible, with deeper
@@ -309,7 +313,7 @@ diagnostics available when a regression or surprising result appears.
 ### 6. Timed Play
 
 Give the model a move-time output, once it already reads time and the rest of
-the stack is clearly working.
+the stack is clearly working, and then train the target model with it.
 
 The corpus, the evaluation pool, benchmark slicing, and the policy's clock
 inputs all arrive before this stage, so what remains is the output half: an
@@ -317,6 +321,26 @@ action-conditioned time head, a masked timing objective for the games that carry
 usable clocks, the timing diagnostics deferred out of stage 3, and clock
 handling at the UCI boundary. See `docs/architecture.md` and
 `docs/decisions/0003-action-conditioned-timing.md`.
+
+**The half that changes the weights comes before the target run.** The time head
+is a candidate like any in stage 5: an arm against the vehicle, accepted on
+offline timing metrics only where move prediction holds, since no auxiliary head
+has yet improved it. Generated play then runs simulated clocks, because the run
+reads its own length from the rating dial and generated play, and those should
+be read under time pressure rather than with the clock absent. The accepted set
+is read again as one arm with the time head in it.
+
+**A second loss reopens the target's rate.** The rate at the target width was
+bracketed on move prediction alone, so it is re-checked with the timing loss on
+before anything predicts the run from it.
+
+**A confirmation run then reads the target size at a fraction of its budget**,
+which holds the size term fixed and removes the hardest extrapolation, before the
+full run. A confirmation that misses its predicted loss is a confound rather than
+a surprise, and is cheaper to find there than in the run itself.
+
+Clock handling at the UCI boundary and clocked play on the preview change no
+weights, so they follow the run rather than gate it.
 
 This stage is why the corpus ends in mid-2021. Centisecond clocks exist only in
 a closed export, one-second quantization is coarse against blitz move times, and
