@@ -56,6 +56,10 @@ class MoveModelConfig(ConfigModel):
     #: Chessformer does; ``pre`` normalizes the embedding and each sublayer's
     #: input.
     block_norm: Literal["pre", "post"] = "pre"
+    #: Whether the move logits also take a learned per-position shift scaled
+    #: linearly by the rating, so the rating's effect at the output keeps
+    #: growing at the same rate past the ratings training saw.
+    rating_logit_shift: bool = False
 
     @model_validator(mode="after")
     def validate_attention_shape(self) -> MoveModelConfig:

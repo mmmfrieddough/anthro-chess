@@ -59,7 +59,14 @@ _CLOCK_FEATURE_COUNT = 6
 #: Fields a model reading no clock leaves out of its identity, so that it is
 #: still the identity every run recorded before they existed.
 _CLOCK_CONFIG_FIELDS = ("clock_inputs", "clock_dropout")
-_ARCHITECTURE_DEFAULTS = {"rating_path": "line", "block_norm": "pre"}
+_ARCHITECTURE_DEFAULTS = {
+    "rating_path": "line",
+    "block_norm": "pre",
+    "rating_logit_shift": False,
+}
+#: The rating the logit shift is centred on and the span one unit of it covers.
+_SHIFT_CENTRE = 1600.0
+_SHIFT_SPAN = 1000.0
 
 
 class RatingEmbedding(nn.Module):
@@ -606,6 +613,14 @@ class MoveModel(nn.Module):
         # cannot be read without also reading the configuration.
         self.norm = nn.LayerNorm(self.config.model_dim)
         self.action_head = SourceDestinationHead(self.config)
+        self.shift_head = (
+            SourceDestinationHead(self.config)
+            if self.config.rating_logit_shift
+            else None
+        )
+        if self.shift_head is not None:
+            # Zero, so training starts from the model without it.
+            self.shift_gate = nn.Parameter(torch.zeros(()))
 
     def forward(self, batch: MoveModelBatch) -> Tensor:
         """Return raw action logits shaped batch by sequence by vocabulary.
@@ -633,7 +648,18 @@ class MoveModel(nn.Module):
 
         squares = self.encode(batch, decisions)
         black = _at_decision(batch.inputs.side_to_move, decisions).bool()
-        return cast(Tensor, self.action_head(squares, black))
+        logits = self.action_head(squares, black)
+        if self.shift_head is not None:
+            rating = _at_decision_optional(batch.inputs.target_rating, decisions)
+            scale = torch.where(
+                rating.present,
+                (rating.values.float() - _SHIFT_CENTRE) / _SHIFT_SPAN,
+                torch.zeros_like(rating.values, dtype=torch.float),
+            )
+            logits = logits + (
+                self.shift_gate * scale.unsqueeze(-1) * self.shift_head(squares, black)
+            )
+        return cast(Tensor, logits)
 
     def encode(self, batch: MoveModelBatch, decisions: Tensor) -> Tensor:
         """Encode the named decisions' squares, each reading its own history."""

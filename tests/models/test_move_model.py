@@ -448,7 +448,13 @@ def test_the_identity_carries_every_value_needed_to_rebuild_the_model() -> None:
 
     assert config_record == config.model_dump(
         mode="json",
-        exclude={"clock_inputs", "clock_dropout", "rating_path", "block_norm"},
+        exclude={
+            "clock_inputs",
+            "clock_dropout",
+            "rating_path",
+            "block_norm",
+            "rating_logit_shift",
+        },
     )
     assert MoveModelConfig.model_validate(config_record) == config
     assert (
@@ -459,7 +465,12 @@ def test_the_identity_carries_every_value_needed_to_rebuild_the_model() -> None:
 
 @pytest.mark.parametrize(
     "change",
-    [{"rating_path": "arc"}, {"rating_path": "modulation"}, {"block_norm": "post"}],
+    [
+        {"rating_path": "arc"},
+        {"rating_path": "modulation"},
+        {"block_norm": "post"},
+        {"rating_logit_shift": True},
+    ],
 )
 def test_an_architecture_away_from_the_default_names_itself(
     change: dict[str, str],
@@ -991,3 +1002,23 @@ def _tiny_config(
         geometric_bias_dim=8,
         dropout=dropout,
     )
+
+
+def test_the_logit_shift_grows_linearly_with_the_rating() -> None:
+    torch.manual_seed(37)
+    model = MoveModel(
+        _tiny_config().model_copy(update={"rating_logit_shift": True})
+    ).eval()
+    with torch.no_grad():
+        model.shift_gate.fill_(1.0)
+    moves = ("e2e4", "e7e5", "g1f3")
+    logits = []
+    with torch.no_grad():
+        for rating in (1600, 2600, 3600):
+            batch = MoveModelBatch.from_sequence_batch(
+                _sequence_batch(moves, white_rating=rating, black_rating=rating)
+            )
+            # The trunk sees the rating too; only the shift is linear in it.
+            model.square_encoder.rating_embedding = None
+            logits.append(model(batch))
+    torch.testing.assert_close(logits[2] - logits[1], logits[1] - logits[0])
