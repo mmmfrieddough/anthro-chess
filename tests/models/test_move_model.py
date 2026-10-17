@@ -1022,3 +1022,25 @@ def test_the_logit_shift_grows_linearly_with_the_rating() -> None:
             model.square_encoder.rating_embedding = None
             logits.append(model(batch))
     torch.testing.assert_close(logits[2] - logits[1], logits[1] - logits[0])
+
+
+def test_a_capped_line_is_the_line_inside_the_corpus_and_holds_its_length_outside() -> (
+    None
+):
+    torch.manual_seed(41)
+    line = RatingEmbedding(_tiny_config())
+    capped = RatingEmbedding(
+        _tiny_config().model_copy(update={"rating_path": "capped"})
+    )
+    capped.load_state_dict(line.state_dict())
+    ratings = torch.tensor([[0, 600, 1500, 3000, 4000, 5000]])
+    present = torch.ones_like(ratings, dtype=torch.bool)
+
+    with torch.no_grad():
+        plain = line(OptionalTensor(ratings, present))[0]
+        held = capped(OptionalTensor(ratings, present))[0]
+
+    torch.testing.assert_close(held[1:4], plain[1:4])
+    torch.testing.assert_close(held[0].norm(), plain[1].norm())
+    torch.testing.assert_close(held[4:].norm(dim=-1), plain[3].norm().expand(2))
+    torch.testing.assert_close(F.normalize(held, dim=-1), F.normalize(plain, dim=-1))

@@ -49,9 +49,10 @@ class MoveModelConfig(ConfigModel):
     #: segment between two anchors to every square token, so its length varies
     #: with the rating; ``arc`` turns between the anchors' directions at one
     #: learned length; ``fixed`` takes the line's direction at one learned
-    #: length; ``modulation`` leaves the tokens alone and scales and shifts
-    #: every block's normalized input instead.
-    rating_path: Literal["line", "arc", "fixed", "modulation"] = "line"
+    #: length; ``capped`` is the line inside the corpus's ratings and keeps the
+    #: length it has at the nearer edge beyond them; ``modulation`` leaves the
+    #: tokens alone and scales and shifts every block's normalized input instead.
+    rating_path: Literal["line", "arc", "fixed", "capped", "modulation"] = "line"
     #: ``post`` normalizes after each residual sum and not the embedding, as
     #: Chessformer does; ``pre`` normalizes the embedding and each sublayer's
     #: input.

@@ -53,6 +53,10 @@ _PROMOTION_CHOICE_COUNT = 4
 #: carries.
 _WEAK_RATING_ANCHOR = 0.0
 _STRONG_RATING_ANCHOR = 5000.0
+#: The ratings the corpus holds enough of to train the line's length, as the
+#: weakness each sits at: its floor of 600 and where it thins out, about 3000.
+_CAP_WEAKNESS_LOW = (_STRONG_RATING_ANCHOR - 3000.0) / _STRONG_RATING_ANCHOR
+_CAP_WEAKNESS_HIGH = (_STRONG_RATING_ANCHOR - 600.0) / _STRONG_RATING_ANCHOR
 #: The initial clock, the increment, both players' clocks, and the time each
 #: player spent on their last move.
 _CLOCK_FEATURE_COUNT = 6
@@ -108,6 +112,12 @@ class RatingEmbedding(nn.Module):
             placed = weakness * self.weak + (1.0 - weakness) * self.strong
             if self.path == "fixed":
                 placed = self.length * F.normalize(placed, dim=-1)
+            elif self.path == "capped":
+                edge = weakness.clamp(_CAP_WEAKNESS_LOW, _CAP_WEAKNESS_HIGH)
+                at_edge = edge * self.weak + (1.0 - edge) * self.strong
+                placed = F.normalize(placed, dim=-1) * at_edge.norm(
+                    dim=-1, keepdim=True
+                )
         return torch.where(rating.present.unsqueeze(-1), placed, self.unrated)
 
 
