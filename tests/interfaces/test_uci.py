@@ -205,6 +205,12 @@ def test_invalid_position_and_options_do_not_mutate_current_state() -> None:
     assert engine.board == expected
     assert engine.runtime_config.target_rating == UCI_CONDITIONED_RATINGS[1]
 
+    output, error = _run(engine, "setoption name UCI_Elo value -1\nquit\n")
+
+    assert "UCI_Elo must be between 0 and 5000" in error
+    assert engine.board == expected
+    assert engine.runtime_config.target_rating == UCI_CONDITIONED_RATINGS[1]
+
 
 def test_new_game_reset_fen_terminal_and_clean_exit() -> None:
     engine = UciEngine(

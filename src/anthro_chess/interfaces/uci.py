@@ -102,7 +102,7 @@ class UciEngine:
         self._limit_strength = False
         self._runtime_config = RuntimeConfig.model_validate(
             config.runtime.model_copy(
-                update={"target_rating": _conditioned(UCI_MAX_RATING)}
+                update={"target_rating": self._target_rating()}
             ).model_dump()
         )
         self._debug = False
@@ -264,10 +264,8 @@ class UciEngine:
         logger.debug("Received UCI option %s with value %s", name, value)
         normalized = name.casefold()
         if normalized == "uci_limitstrength":
-            limit_strength = _parse_check(value, name=name)
-            self._limit_strength = limit_strength
-            target_rating = self._uci_elo if limit_strength else UCI_MAX_RATING
-            self._replace_runtime(target_rating=_conditioned(target_rating))
+            self._limit_strength = _parse_check(value, name=name)
+            self._replace_runtime(target_rating=self._target_rating())
         elif normalized == "uci_elo":
             rating = _parse_spin(
                 value,
@@ -276,8 +274,7 @@ class UciEngine:
                 maximum=UCI_MAX_RATING,
             )
             self._uci_elo = rating
-            if self._limit_strength:
-                self._replace_runtime(target_rating=_conditioned(rating))
+            self._replace_runtime(target_rating=self._target_rating())
         elif normalized == "anthro temperature":
             temperature = _parse_spin(
                 value,
@@ -466,6 +463,13 @@ class UciEngine:
         if self._pending_bestmove is not None:
             self._pending_bestmove = None
             logger.debug("Discarded an unstopped infinite-search response")
+
+    def _target_rating(self) -> int:
+        """Return the rating the model is conditioned on for the current options."""
+
+        requested = self._uci_elo if self._limit_strength else UCI_MAX_RATING
+        low, high = UCI_CONDITIONED_RATINGS
+        return min(max(requested, low), high)
 
     def _runtime_log_record(self) -> dict[str, bool | float | int | None]:
         session = self._session
@@ -671,13 +675,6 @@ def _parse_check(value: str, *, name: str) -> bool:
     if normalized not in {"true", "false"}:
         raise UciProtocolError(f"{name} expects true or false")
     return normalized == "true"
-
-
-def _conditioned(rating: int) -> int:
-    """Return the rating the model is conditioned on for a requested one."""
-
-    low, high = UCI_CONDITIONED_RATINGS
-    return min(max(rating, low), high)
 
 
 def _parse_spin(value: str, *, name: str, minimum: int, maximum: int) -> int:

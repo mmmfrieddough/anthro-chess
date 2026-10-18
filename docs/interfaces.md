@@ -61,10 +61,9 @@ commits only after the complete history validates. It exposes
 exact bounds, scaling, and the random-seed sentinel live in the UCI
 configuration module. `UCI_Elo` accepts the whole span the rating embedding's
 anchors cover, and a request outside the ratings training covers is conditioned
-on the nearer edge of them, because past them the dial falls back rather than
-holding. Disabling `UCI_LimitStrength` selects the top of the accepted range,
-which is the upper edge of the trained ratings, not a claim of calibrated
-playing strength, and is the protocol-default state. Unknown commands and tokens are ignored where
+on the nearer edge of them. Disabling `UCI_LimitStrength` conditions on the
+upper edge, which is not a claim of calibrated playing strength, and is the
+protocol-default state. Unknown commands and tokens are ignored where
 the remaining command can be parsed safely.
 
 UCI has no engine-side color. Every `go` asks for a move by whichever player

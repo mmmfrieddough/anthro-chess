@@ -11,9 +11,10 @@ ratings, and openings alone carry precision. Extends
 `0022-one-joint-rating-ladder-fit.md`, whose shape is unchanged, and
 `0064-the-complete-round-robin-is-the-optimal-ladder-design.md`, whose pairing
 structure is unchanged. Refined by
-`0100-the-dial-accepts-its-span-and-is-measured-against-humans.md`, which reads
-the whole accepted range against human games, sends most games to neighbouring
-seats, and starts readings from the initial position.
+`0100-the-dial-accepts-its-span-and-is-measured-against-humans.md`, which
+decides that the ladder read the whole accepted range against human games,
+send most games to neighbouring seats, and start from the initial position;
+until `#604` builds that, this record describes the ladder that runs.
 
 ## Context
 
