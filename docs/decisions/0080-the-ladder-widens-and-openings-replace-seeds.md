@@ -10,7 +10,10 @@ as the precision lever. Both halves are replaced: the grid widens to eight
 ratings, and openings alone carry precision. Extends
 `0022-one-joint-rating-ladder-fit.md`, whose shape is unchanged, and
 `0064-the-complete-round-robin-is-the-optimal-ladder-design.md`, whose pairing
-structure is unchanged.
+structure is unchanged. Refined by
+`0100-the-dial-accepts-its-span-and-is-measured-against-humans.md`, which reads
+the whole accepted range against human games, sends most games to neighbouring
+seats, and starts readings from the initial position.
 
 ## Context
 

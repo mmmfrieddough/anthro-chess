@@ -28,6 +28,7 @@ from anthro_chess.config import ConfigError, load_config
 from anthro_chess.data import UNTIMED, DecisionTime
 from anthro_chess.inference import CheckpointModelRunner
 from anthro_chess.interfaces.config import (
+    UCI_CONDITIONED_RATINGS,
     UCI_MAX_RATING,
     UCI_MAX_SEED,
     UCI_MAX_TEMPERATURE,
@@ -95,12 +96,13 @@ class UciEngine:
         normal_log_level: int = logging.INFO,
     ) -> None:
         self._load_runner = load_runner
-        self._uci_elo = config.runtime.target_rating
-        assert self._uci_elo is not None
+        requested = config.runtime.target_rating
+        assert requested is not None
+        self._uci_elo: int = requested
         self._limit_strength = False
         self._runtime_config = RuntimeConfig.model_validate(
             config.runtime.model_copy(
-                update={"target_rating": UCI_MAX_RATING}
+                update={"target_rating": _conditioned(UCI_MAX_RATING)}
             ).model_dump()
         )
         self._debug = False
@@ -265,7 +267,7 @@ class UciEngine:
             limit_strength = _parse_check(value, name=name)
             self._limit_strength = limit_strength
             target_rating = self._uci_elo if limit_strength else UCI_MAX_RATING
-            self._replace_runtime(target_rating=target_rating)
+            self._replace_runtime(target_rating=_conditioned(target_rating))
         elif normalized == "uci_elo":
             rating = _parse_spin(
                 value,
@@ -275,7 +277,7 @@ class UciEngine:
             )
             self._uci_elo = rating
             if self._limit_strength:
-                self._replace_runtime(target_rating=rating)
+                self._replace_runtime(target_rating=_conditioned(rating))
         elif normalized == "anthro temperature":
             temperature = _parse_spin(
                 value,
@@ -669,6 +671,13 @@ def _parse_check(value: str, *, name: str) -> bool:
     if normalized not in {"true", "false"}:
         raise UciProtocolError(f"{name} expects true or false")
     return normalized == "true"
+
+
+def _conditioned(rating: int) -> int:
+    """Return the rating the model is conditioned on for a requested one."""
+
+    low, high = UCI_CONDITIONED_RATINGS
+    return min(max(rating, low), high)
 
 
 def _parse_spin(value: str, *, name: str, minimum: int, maximum: int) -> int:

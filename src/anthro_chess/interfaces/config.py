@@ -8,10 +8,15 @@ from pydantic import Field, model_validator
 
 from anthro_chess.config import ConfigModel
 from anthro_chess.inference import ModelRunnerConfig
+from anthro_chess.models import STRONG_RATING_ANCHOR, WEAK_RATING_ANCHOR
 from anthro_chess.runtime import RuntimeConfig
 
-UCI_MIN_RATING = 400
-UCI_MAX_RATING = 2500
+UCI_MIN_RATING = int(WEAK_RATING_ANCHOR)
+UCI_MAX_RATING = int(STRONG_RATING_ANCHOR)
+#: The ratings the training corpus holds enough games at to order the dial:
+#: its floor, and where its ratings thin out. Past them the dial falls back
+#: rather than holding, so a request outside is conditioned on the nearer edge.
+UCI_CONDITIONED_RATINGS = (600, 3000)
 UCI_TEMPERATURE_SCALE = 100
 UCI_MAX_TEMPERATURE = 300
 # The seed spin exposes ``-1`` as the fresh-per-game sentinel and otherwise an
