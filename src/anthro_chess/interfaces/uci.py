@@ -28,7 +28,6 @@ from anthro_chess.config import ConfigError, load_config
 from anthro_chess.data import UNTIMED, DecisionTime
 from anthro_chess.inference import CheckpointModelRunner
 from anthro_chess.interfaces.config import (
-    UCI_FULL_STRENGTH_RATING,
     UCI_MAX_RATING,
     UCI_MAX_SEED,
     UCI_MAX_TEMPERATURE,
@@ -101,7 +100,7 @@ class UciEngine:
         self._limit_strength = False
         self._runtime_config = RuntimeConfig.model_validate(
             config.runtime.model_copy(
-                update={"target_rating": UCI_FULL_STRENGTH_RATING}
+                update={"target_rating": UCI_MAX_RATING}
             ).model_dump()
         )
         self._debug = False
@@ -265,9 +264,7 @@ class UciEngine:
         if normalized == "uci_limitstrength":
             limit_strength = _parse_check(value, name=name)
             self._limit_strength = limit_strength
-            target_rating = (
-                self._uci_elo if limit_strength else UCI_FULL_STRENGTH_RATING
-            )
+            target_rating = self._uci_elo if limit_strength else UCI_MAX_RATING
             self._replace_runtime(target_rating=target_rating)
         elif normalized == "uci_elo":
             rating = _parse_spin(

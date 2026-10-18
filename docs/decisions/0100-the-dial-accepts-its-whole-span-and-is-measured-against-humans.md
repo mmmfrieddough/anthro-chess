@@ -26,14 +26,15 @@ slope of one.
 **`UCI_Elo` accepts the rating embedding's whole span, 0 to 5000, read from
 its anchors.** Nothing is clamped: the model is conditioned on the rating asked
 for, including where the measurements below show its strength no longer
-following the request. Turning the strength limit off plays 3000, where the
-dial measured strongest, rather than 5000, where it has fallen back.
+following the request. Turning the strength limit off plays the top of the
+span, 5000, even though that is where the dial has fallen back.
 
 Both are interim. `#600` records each checkpoint's measured range and strongest
 rating in a small file beside it, which the engine reads at the UCI handshake
 without loading weights, so the advertised range and the full-strength rating
-follow the checkpoint. Until a checkpoint carries that record, any narrower
-constant would be a guess about every checkpoint at once.
+follow the checkpoint. Until a checkpoint carries that record, any constant
+narrower than the span, or any full-strength rating below its top, would be a
+guess about every checkpoint at once.
 
 **The dial is measured against human games, not the Elo formula.** For each
 pair of ratings the ladder compares how often the higher seat scores with how
@@ -96,8 +97,8 @@ selected toward new and provisional accounts, which `#599`'s per-game rating
 change would identify.
 
 **That every advertised setting plays its rating.** Below about 600 and above
-about 3000 the model's strength stops following the request, and 3000 as full
-strength is one checkpoint's peak, not every checkpoint's.
+about 3000 the model's strength stops following the request, so until `#600`
+lands, turning the strength limit off plays weaker than the model can.
 
 ## Consequences
 
@@ -110,8 +111,9 @@ one, and what remains looks like something scale and top-end data close.
 **Conditioning a request outside the trained ratings on their nearer edge.**
 It advertises settings that do nothing, behind a clamp no player can see.
 
-**Advertising the ratings training covers, 600 to 3000.** It is the same guess
-as any constant until a checkpoint records its own range, and `#600` replaces it.
+**Advertising the ratings training covers, 600 to 3000, or playing 3000 with
+the strength limit off.** Each is one checkpoint's measurement written into
+code as though it held for every checkpoint, and `#600` replaces it.
 
 **Advertising the whole span and refusing settings outside the checkpoint's
 range when it loads.** UCI has no reply to `setoption`, so a GUI offers every

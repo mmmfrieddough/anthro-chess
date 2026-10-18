@@ -13,9 +13,6 @@ from anthro_chess.runtime import RuntimeConfig
 
 UCI_MIN_RATING = int(WEAK_RATING_ANCHOR)
 UCI_MAX_RATING = int(STRONG_RATING_ANCHOR)
-#: Where the dial measured strongest. Above it the rating embedding outgrows the
-#: board and play weakens, so the top of the span is not full strength.
-UCI_FULL_STRENGTH_RATING = 3000
 UCI_TEMPERATURE_SCALE = 100
 UCI_MAX_TEMPERATURE = 300
 # The seed spin exposes ``-1`` as the fresh-per-game sentinel and otherwise an

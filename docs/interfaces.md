@@ -60,10 +60,10 @@ commits only after the complete history validates. It exposes
 `UCI_LimitStrength`, `UCI_Elo`, `Anthro Temperature`, and `Anthro Seed`; their
 exact bounds, scaling, and the random-seed sentinel live in the UCI
 configuration module. `UCI_Elo` spans the rating embedding's anchors, and
-disabling `UCI_LimitStrength` selects the code-owned full-strength rating, not
-a claim of calibrated playing strength, and is the protocol-default state.
-Unknown commands and tokens are ignored where the remaining command can be
-parsed safely.
+disabling `UCI_LimitStrength` selects the top of that span, not a claim of
+calibrated playing strength, and is the protocol-default state. Unknown
+commands and tokens are ignored where the remaining command can be parsed
+safely.
 
 UCI has no engine-side color. Every `go` asks for a move by whichever player
 is to move in the synchronized position, so one process serves both sides and

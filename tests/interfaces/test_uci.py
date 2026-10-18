@@ -36,7 +36,7 @@ from anthro_chess.data import (
     DecisionTime,
     encoding_identity,
 )
-from anthro_chess.interfaces.config import UCI_FULL_STRENGTH_RATING, UciConfig
+from anthro_chess.interfaces.config import UCI_MAX_RATING, UciConfig
 from anthro_chess.interfaces.uci import UciEngine
 from anthro_chess.models import MoveModel
 from anthro_chess.runtime import RuntimeConfig
@@ -141,12 +141,12 @@ def test_option_changes_keep_rating_and_temperature_independent() -> None:
 
     _run(engine, "setoption name Anthro Temperature value 25\n")
     assert engine.runtime_config == RuntimeConfig(
-        target_rating=UCI_FULL_STRENGTH_RATING,
+        target_rating=UCI_MAX_RATING,
         temperature=0.25,
     )
 
     _run(engine, "setoption name UCI_Elo value 1800\n")
-    assert engine.runtime_config.target_rating == UCI_FULL_STRENGTH_RATING
+    assert engine.runtime_config.target_rating == UCI_MAX_RATING
     assert engine.runtime_config.temperature == 0.25
 
     _run(engine, "setoption name UCI_LimitStrength value true\n")
@@ -159,7 +159,7 @@ def test_option_changes_keep_rating_and_temperature_independent() -> None:
     assert engine.runtime_config.target_rating == 5000
 
     _run(engine, "setoption name UCI_LimitStrength value false\n")
-    assert engine.runtime_config.target_rating == UCI_FULL_STRENGTH_RATING
+    assert engine.runtime_config.target_rating == UCI_MAX_RATING
     assert engine.runtime_config.temperature == 0.25
 
 
@@ -186,7 +186,7 @@ def test_invalid_position_and_options_do_not_mutate_current_state() -> None:
     assert "illegal position move at ply 0" in error
     assert "UCI_Elo must be between 0 and 5000" in error
     assert engine.board == expected
-    assert engine.runtime_config.target_rating == UCI_FULL_STRENGTH_RATING
+    assert engine.runtime_config.target_rating == UCI_MAX_RATING
 
 
 def test_new_game_reset_fen_terminal_and_clean_exit() -> None:
@@ -750,7 +750,7 @@ def test_debug_game_events_reconstruct_positions_boundaries_and_decisions() -> N
         "resolved_seed": 123,
         "resignation_enabled": False,
         "draw_claim_enabled": False,
-        "target_rating": 3000,
+        "target_rating": 5000,
         "temperature": 0.0,
     }
 
