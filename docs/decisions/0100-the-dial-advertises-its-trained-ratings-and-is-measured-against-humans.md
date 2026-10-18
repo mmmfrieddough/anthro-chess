@@ -1,4 +1,4 @@
-# 0100: The Dial Accepts Its Span And Is Measured Against Humans
+# 0100: The Dial Advertises Its Trained Ratings And Is Measured Against Humans
 
 Date: 2026-10-18
 
@@ -23,11 +23,14 @@ slope of one.
 
 ## Decision
 
-**`UCI_Elo` accepts the embedding's span, read from its anchors.** A request
-outside the ratings training covers is conditioned on the nearer edge of them,
-and turning the strength limit off selects the top of the span, so it plays the
-upper edge. The edges live in the UCI configuration until each checkpoint
-records its own trained range, which `#600` owns.
+**`UCI_Elo` advertises the ratings training covers: 600 to 3000.** 600 is the
+corpus's floor and 3000 is where its ratings thin out; inside them the dial is
+ordered, and outside them the model's strength stops following the request.
+Turning the strength limit off plays the top of that range. A setting the
+engine advertises is one that changes play. The range lives in the UCI
+configuration until each checkpoint records its own trained range, which
+`#600` owns; the engine can read that record before the UCI handshake without
+loading weights, so the advertised range can follow the checkpoint.
 
 **The dial is measured against human games, not the Elo formula.** For each
 pair of ratings the ladder compares how often the higher seat scores with how
@@ -36,7 +39,7 @@ two numbers and the curve behind them: the close-end calibration along the
 dial, as a curve over rating location with its weighted mean and its worst
 stretch, and the far-end match as the gap grows.
 
-**The ladder reads the whole accepted range every time.** A core from 600 to
+**The ladder reads the embedding's whole span every time.** A core from 600 to
 3000 carries the tuning numbers; an extension to 0 and 5000 reports separately,
 so behaviour outside the data never dilutes the core. Most games go to
 neighbouring seats, where the calibration lives, and readings start from the
@@ -98,11 +101,13 @@ trained on a corpus with a lower floor carries a wider range under `#600`.
 70% of the human spread at close gaps rather than 30 to 50% of an unreachable
 one, and what remains looks like something scale and top-end data close.
 
-A setting above about 3000 plays the same as 3000, so the advertised span is
-wider than the range where the dial moves; the interface can say so once the
-checkpoint records its range.
-
 ## Alternatives Considered
+
+**Accepting the embedding's whole span, 0 to 5000, and conditioning a request
+outside the trained ratings on their nearer edge.** It advertises settings that
+do nothing. UCI fixes an option's range at the handshake and has no message to
+change it, but the handshake can read the checkpoint's recorded range, so the
+advertised range need not be wider than what the model delivers.
 
 **Narrowing `UCI_Elo` to the measured 1050 to 2100.** It drops the weak play
 `docs/vision.md` asks for and would follow the measurement rather than the data.

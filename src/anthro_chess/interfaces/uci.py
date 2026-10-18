@@ -28,7 +28,6 @@ from anthro_chess.config import ConfigError, load_config
 from anthro_chess.data import UNTIMED, DecisionTime
 from anthro_chess.inference import CheckpointModelRunner
 from anthro_chess.interfaces.config import (
-    UCI_CONDITIONED_RATINGS,
     UCI_MAX_RATING,
     UCI_MAX_SEED,
     UCI_MAX_TEMPERATURE,
@@ -96,13 +95,12 @@ class UciEngine:
         normal_log_level: int = logging.INFO,
     ) -> None:
         self._load_runner = load_runner
-        requested = config.runtime.target_rating
-        assert requested is not None
-        self._uci_elo: int = requested
+        self._uci_elo = config.runtime.target_rating
+        assert self._uci_elo is not None
         self._limit_strength = False
         self._runtime_config = RuntimeConfig.model_validate(
             config.runtime.model_copy(
-                update={"target_rating": self._target_rating()}
+                update={"target_rating": UCI_MAX_RATING}
             ).model_dump()
         )
         self._debug = False
@@ -264,8 +262,10 @@ class UciEngine:
         logger.debug("Received UCI option %s with value %s", name, value)
         normalized = name.casefold()
         if normalized == "uci_limitstrength":
-            self._limit_strength = _parse_check(value, name=name)
-            self._replace_runtime(target_rating=self._target_rating())
+            limit_strength = _parse_check(value, name=name)
+            self._limit_strength = limit_strength
+            target_rating = self._uci_elo if limit_strength else UCI_MAX_RATING
+            self._replace_runtime(target_rating=target_rating)
         elif normalized == "uci_elo":
             rating = _parse_spin(
                 value,
@@ -274,7 +274,8 @@ class UciEngine:
                 maximum=UCI_MAX_RATING,
             )
             self._uci_elo = rating
-            self._replace_runtime(target_rating=self._target_rating())
+            if self._limit_strength:
+                self._replace_runtime(target_rating=rating)
         elif normalized == "anthro temperature":
             temperature = _parse_spin(
                 value,
@@ -463,12 +464,6 @@ class UciEngine:
         if self._pending_bestmove is not None:
             self._pending_bestmove = None
             logger.debug("Discarded an unstopped infinite-search response")
-
-    def _target_rating(self) -> int:
-        """Return the rating the model is conditioned on for the current options."""
-
-        low, high = UCI_CONDITIONED_RATINGS
-        return min(max(self._uci_elo, low), high) if self._limit_strength else high
 
     def _runtime_log_record(self) -> dict[str, bool | float | int | None]:
         session = self._session

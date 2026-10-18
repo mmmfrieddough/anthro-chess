@@ -51,8 +51,8 @@ _PROMOTION_CHOICE_COUNT = 4
 #: bullet -- so the range that must not clamp is wider than any one corpus.
 #: The corpus reaches into the 3900s, so both ends sit outside any rating it
 #: carries.
-WEAK_RATING_ANCHOR = 0.0
-STRONG_RATING_ANCHOR = 5000.0
+_WEAK_RATING_ANCHOR = 0.0
+_STRONG_RATING_ANCHOR = 5000.0
 #: The initial clock, the increment, both players' clocks, and the time each
 #: player spent on their last move.
 _CLOCK_FEATURE_COUNT = 6
@@ -84,9 +84,9 @@ class RatingEmbedding(nn.Module):
     def forward(self, rating: OptionalTensor) -> Tensor:
         """Return one embedding per decision, shaped batch by decision by width."""
 
-        span = STRONG_RATING_ANCHOR - WEAK_RATING_ANCHOR
+        span = _STRONG_RATING_ANCHOR - _WEAK_RATING_ANCHOR
         weakness = (
-            ((STRONG_RATING_ANCHOR - rating.values.float()) / span)
+            ((_STRONG_RATING_ANCHOR - rating.values.float()) / span)
             .clamp(0.0, 1.0)
             .unsqueeze(-1)
         )
@@ -635,7 +635,7 @@ def model_identity(config: MoveModelConfig) -> dict[str, object]:
         # means: move one and a retained checkpoint's dial silently reinterprets
         # itself. Carrying them here is what makes the runner's identity check
         # refuse such a checkpoint instead of serving it under new endpoints.
-        "rating_anchors": [WEAK_RATING_ANCHOR, STRONG_RATING_ANCHOR],
+        "rating_anchors": [_WEAK_RATING_ANCHOR, _STRONG_RATING_ANCHOR],
         "timing_inputs": config.clock_inputs,
         "timing_head": False,
     }

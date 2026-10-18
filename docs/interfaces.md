@@ -59,12 +59,11 @@ synchronization accepts `startpos` or a complete FEN plus move history and
 commits only after the complete history validates. It exposes
 `UCI_LimitStrength`, `UCI_Elo`, `Anthro Temperature`, and `Anthro Seed`; their
 exact bounds, scaling, and the random-seed sentinel live in the UCI
-configuration module. `UCI_Elo` accepts the whole span the rating embedding's
-anchors cover, and a request outside the ratings training covers is conditioned
-on the nearer edge of them. Disabling `UCI_LimitStrength` conditions on the
-upper edge, which is not a claim of calibrated playing strength, and is the
-protocol-default state. Unknown commands and tokens are ignored where
-the remaining command can be parsed safely.
+configuration module. `UCI_Elo` advertises the ratings training covers, and
+disabling `UCI_LimitStrength` selects the top of them, not a claim of
+calibrated playing strength, and is the protocol-default state. Unknown
+commands and tokens are ignored where the remaining command can be parsed
+safely.
 
 UCI has no engine-side color. Every `go` asks for a move by whichever player
 is to move in the synchronized position, so one process serves both sides and
@@ -240,7 +239,7 @@ Examples:
 
 ```text
 option name UCI_LimitStrength type check default false
-option name UCI_Elo type spin default 1500 min 0 max 5000
+option name UCI_Elo type spin default 1500 min 600 max 3000
 option name Anthro Temperature type spin default 100 min 0 max 300
 option name Anthro Seed type spin default -1 min -1 max 2147483647
 option name Anthro Aggression type spin default 0 min -100 max 100
