@@ -161,7 +161,12 @@ def test_option_changes_keep_rating_and_temperature_independent() -> None:
 
 
 @pytest.mark.parametrize(
-    ("requested", "conditioned"), [(0, 600), (1800, 1800), (4500, 3000)]
+    ("requested", "conditioned"),
+    [
+        (0, UCI_CONDITIONED_RATINGS[0]),
+        (1800, 1800),
+        (4500, UCI_CONDITIONED_RATINGS[1]),
+    ],
 )
 def test_a_rating_outside_the_trained_range_is_conditioned_on_its_edge(
     requested: int, conditioned: int
@@ -188,28 +193,23 @@ def test_invalid_position_and_options_do_not_mutate_current_state() -> None:
     _run(engine, "position startpos moves e2e4 e7e5\n")
     expected = engine.board
 
-    output, error = _run(
-        engine,
-        "\n".join(
-            (
-                "position startpos moves e2e5",
-                "setoption name UCI_Elo value 5001",
-                "quit",
-            )
-        ),
-    )
+    for rating in (5001, -1):
+        output, error = _run(
+            engine,
+            "\n".join(
+                (
+                    "position startpos moves e2e5",
+                    f"setoption name UCI_Elo value {rating}",
+                    "quit",
+                )
+            ),
+        )
 
-    assert output == ""
-    assert "illegal position move at ply 0" in error
-    assert "UCI_Elo must be between 0 and 5000" in error
-    assert engine.board == expected
-    assert engine.runtime_config.target_rating == UCI_CONDITIONED_RATINGS[1]
-
-    output, error = _run(engine, "setoption name UCI_Elo value -1\nquit\n")
-
-    assert "UCI_Elo must be between 0 and 5000" in error
-    assert engine.board == expected
-    assert engine.runtime_config.target_rating == UCI_CONDITIONED_RATINGS[1]
+        assert output == ""
+        assert "illegal position move at ply 0" in error
+        assert "UCI_Elo must be between 0 and 5000" in error
+        assert engine.board == expected
+        assert engine.runtime_config.target_rating == UCI_CONDITIONED_RATINGS[1]
 
 
 def test_new_game_reset_fen_terminal_and_clean_exit() -> None:
@@ -773,7 +773,7 @@ def test_debug_game_events_reconstruct_positions_boundaries_and_decisions() -> N
         "resolved_seed": 123,
         "resignation_enabled": False,
         "draw_claim_enabled": False,
-        "target_rating": 3000,
+        "target_rating": UCI_CONDITIONED_RATINGS[1],
         "temperature": 0.0,
     }
 

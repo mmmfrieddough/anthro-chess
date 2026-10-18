@@ -467,9 +467,8 @@ class UciEngine:
     def _target_rating(self) -> int:
         """Return the rating the model is conditioned on for the current options."""
 
-        requested = self._uci_elo if self._limit_strength else UCI_MAX_RATING
         low, high = UCI_CONDITIONED_RATINGS
-        return min(max(requested, low), high)
+        return min(max(self._uci_elo, low), high) if self._limit_strength else high
 
     def _runtime_log_record(self) -> dict[str, bool | float | int | None]:
         session = self._session
