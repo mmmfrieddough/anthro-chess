@@ -60,7 +60,7 @@ sampling behavior, not a model property, and it is easy to mistake for one.
 `runtime.target_rating` is the one setting that does not take effect on its
 own. It seeds the advertised `UCI_Elo` default, but following UCI convention
 strength limiting is off until the client enables `UCI_LimitStrength`, and until
-then the engine conditions on the code-owned maximum rating.
+then the engine conditions on the code-owned full-strength rating.
 
 Omitting `seed` uses fresh per-game randomness; set an explicit non-negative
 `seed` only to reproduce a game.
@@ -188,9 +188,10 @@ model forward pass, or portable non-move game actions. Unsupported `go` fields
 are ignored rather than used as model inputs.
 
 `UCI_Elo` selects learned rating conditioning; it is not yet calibrated proof
-of the engine's playing strength. Disabling `UCI_LimitStrength` selects the
-maximum supported conditioning rating and does not turn Anthro into a
-conventional strongest-line engine.
+of the engine's playing strength, and outside the ratings training covers it
+stops following the request. Disabling `UCI_LimitStrength` selects the rating
+the dial measured strongest at and does not turn Anthro into a conventional
+strongest-line engine.
 
 The selected proof checkpoint can produce plausible local play while still
 showing weak separation across configured ratings and frequent deterministic

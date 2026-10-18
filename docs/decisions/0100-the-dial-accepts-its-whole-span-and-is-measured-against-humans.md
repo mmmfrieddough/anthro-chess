@@ -1,4 +1,4 @@
-# 0100: The Dial Advertises Its Trained Ratings And Is Measured Against Humans
+# 0100: The Dial Accepts Its Whole Span And Is Measured Against Humans
 
 Date: 2026-10-18
 
@@ -23,14 +23,17 @@ slope of one.
 
 ## Decision
 
-**`UCI_Elo` advertises the ratings training covers: 600 to 3000.** 600 is the
-corpus's floor and 3000 is where its ratings thin out; inside them the dial is
-ordered, and outside them the model's strength stops following the request.
-Turning the strength limit off plays the top of that range. A setting the
-engine advertises is one that changes play. The range lives in the UCI
-configuration until each checkpoint records its own trained range, which
-`#600` owns; the engine can read that record before the UCI handshake without
-loading weights, so the advertised range can follow the checkpoint.
+**`UCI_Elo` accepts the rating embedding's whole span, 0 to 5000, read from
+its anchors.** Nothing is clamped: the model is conditioned on the rating asked
+for, including where the measurements below show its strength no longer
+following the request. Turning the strength limit off plays 3000, where the
+dial measured strongest, rather than 5000, where it has fallen back.
+
+Both are interim. `#600` records each checkpoint's measured range and strongest
+rating in a small file beside it, which the engine reads at the UCI handshake
+without loading weights, so the advertised range and the full-strength rating
+follow the checkpoint. Until a checkpoint carries that record, any narrower
+constant would be a guess about every checkpoint at once.
 
 **The dial is measured against human games, not the Elo formula.** For each
 pair of ratings the ladder compares how often the higher seat scores with how
@@ -92,8 +95,9 @@ Elo too strong everywhere reads the same. `#30` anchors it.
 selected toward new and provisional accounts, which `#599`'s per-game rating
 change would identify.
 
-**That the edges are final.** 600 and 3000 are this corpus's; a checkpoint
-trained on a corpus with a lower floor carries a wider range under `#600`.
+**That every advertised setting plays its rating.** Below about 600 and above
+about 3000 the model's strength stops following the request, and 3000 as full
+strength is one checkpoint's peak, not every checkpoint's.
 
 ## Consequences
 
@@ -103,11 +107,17 @@ one, and what remains looks like something scale and top-end data close.
 
 ## Alternatives Considered
 
-**Accepting the embedding's whole span, 0 to 5000, and conditioning a request
-outside the trained ratings on their nearer edge.** It advertises settings that
-do nothing. UCI fixes an option's range at the handshake and has no message to
-change it, but the handshake can read the checkpoint's recorded range, so the
-advertised range need not be wider than what the model delivers.
+**Conditioning a request outside the trained ratings on their nearer edge.**
+It advertises settings that do nothing, behind a clamp no player can see.
+
+**Advertising the ratings training covers, 600 to 3000.** It is the same guess
+as any constant until a checkpoint records its own range, and `#600` replaces it.
+
+**Advertising the whole span and refusing settings outside the checkpoint's
+range when it loads.** UCI has no reply to `setoption`, so a GUI offers every
+advertised value and a refused one silently keeps the previous rating. Reading
+the checkpoint's record at the handshake gives the same range without the
+refusal.
 
 **Narrowing `UCI_Elo` to the measured 1050 to 2100.** It drops the weak play
 `docs/vision.md` asks for and would follow the measurement rather than the data.

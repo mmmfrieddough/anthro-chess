@@ -36,7 +36,7 @@ from anthro_chess.data import (
     DecisionTime,
     encoding_identity,
 )
-from anthro_chess.interfaces.config import UCI_MAX_RATING, UciConfig
+from anthro_chess.interfaces.config import UCI_FULL_STRENGTH_RATING, UciConfig
 from anthro_chess.interfaces.uci import UciEngine
 from anthro_chess.models import MoveModel
 from anthro_chess.runtime import RuntimeConfig
@@ -125,7 +125,7 @@ def test_protocol_transcript_orders_handshake_and_returns_legal_move() -> None:
     assert lines[1] == "id author Anthro Chess contributors"
     assert lines[2:6] == [
         "option name UCI_LimitStrength type check default false",
-        "option name UCI_Elo type spin default 1500 min 600 max 3000",
+        "option name UCI_Elo type spin default 1500 min 0 max 5000",
         "option name Anthro Temperature type spin default 0 min 0 max 300",
         "option name Anthro Seed type spin default -1 min -1 max 2147483647",
     ]
@@ -141,12 +141,12 @@ def test_option_changes_keep_rating_and_temperature_independent() -> None:
 
     _run(engine, "setoption name Anthro Temperature value 25\n")
     assert engine.runtime_config == RuntimeConfig(
-        target_rating=UCI_MAX_RATING,
+        target_rating=UCI_FULL_STRENGTH_RATING,
         temperature=0.25,
     )
 
     _run(engine, "setoption name UCI_Elo value 1800\n")
-    assert engine.runtime_config.target_rating == UCI_MAX_RATING
+    assert engine.runtime_config.target_rating == UCI_FULL_STRENGTH_RATING
     assert engine.runtime_config.temperature == 0.25
 
     _run(engine, "setoption name UCI_LimitStrength value true\n")
@@ -155,8 +155,11 @@ def test_option_changes_keep_rating_and_temperature_independent() -> None:
     _run(engine, "setoption name UCI_Elo value 1200\n")
     assert engine.runtime_config.target_rating == 1200
 
+    _run(engine, "setoption name UCI_Elo value 5000\n")
+    assert engine.runtime_config.target_rating == 5000
+
     _run(engine, "setoption name UCI_LimitStrength value false\n")
-    assert engine.runtime_config.target_rating == UCI_MAX_RATING
+    assert engine.runtime_config.target_rating == UCI_FULL_STRENGTH_RATING
     assert engine.runtime_config.temperature == 0.25
 
 
@@ -173,7 +176,7 @@ def test_invalid_position_and_options_do_not_mutate_current_state() -> None:
         "\n".join(
             (
                 "position startpos moves e2e5",
-                "setoption name UCI_Elo value 599",
+                "setoption name UCI_Elo value 5001",
                 "quit",
             )
         ),
@@ -181,9 +184,9 @@ def test_invalid_position_and_options_do_not_mutate_current_state() -> None:
 
     assert output == ""
     assert "illegal position move at ply 0" in error
-    assert "UCI_Elo must be between 600 and 3000" in error
+    assert "UCI_Elo must be between 0 and 5000" in error
     assert engine.board == expected
-    assert engine.runtime_config.target_rating == UCI_MAX_RATING
+    assert engine.runtime_config.target_rating == UCI_FULL_STRENGTH_RATING
 
 
 def test_new_game_reset_fen_terminal_and_clean_exit() -> None:
@@ -416,8 +419,8 @@ def test_inference_failure_reports_critical_error_and_exits_without_bestmove() -
 
 
 def test_uci_config_rejects_unrepresentable_or_resigning_runtime() -> None:
-    with pytest.raises(ValidationError, match="between 600 and 3000"):
-        UciConfig(runtime=RuntimeConfig(target_rating=300))
+    with pytest.raises(ValidationError, match="between 0 and 5000"):
+        UciConfig(runtime=RuntimeConfig(target_rating=5001))
     with pytest.raises(ValidationError, match="increments of 0.01"):
         UciConfig(runtime=RuntimeConfig(temperature=0.755))
     with pytest.raises(ValidationError, match="does not support resignation"):
