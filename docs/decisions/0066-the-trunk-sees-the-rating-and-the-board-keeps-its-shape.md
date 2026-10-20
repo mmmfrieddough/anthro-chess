@@ -18,6 +18,9 @@ record kept as scope control is gone, along with the spatial decoder that served
 it, and history is the depth of each square token instead. Everything else below
 still holds.
 
+Kept by `0101-the-rating-conditioning-and-pre-norm-blocks-stay.md`, which read
+alternative rating paths and Chessformer's post-norm blocks against it.
+
 ## Context
 
 The architecture that reached a working training loop was assembled from
