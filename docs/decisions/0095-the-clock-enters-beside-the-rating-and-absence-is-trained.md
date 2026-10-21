@@ -6,7 +6,9 @@ Date: 2026-10-10
 
 Accepted. Answers `#497`. Refined by
 `0099-the-rating-benchmarks-declare-the-control-of-their-games.md`, which
-serves the declared-control context to the rating benchmarks.
+serves the declared-control context to the rating benchmarks, and by
+`0104-the-accepted-set-composes-and-the-ladder-reads-two-speeds.md`, which
+adopts it with the rest of the accepted set.
 
 ## Context
 

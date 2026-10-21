@@ -1,0 +1,81 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "novelty-dose-response",
+    "version": 2
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "model.run_path=\"arm-495-combined\"",
+      "model.checkpoint=\"step-00069465.pt\""
+    ],
+    "sha256": "89aeb80060b8f8b2519bb4afb235014fb0e9e9468ea8e53baa7551832bc9eafd",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/evaluation/novelty-dose-response.toml"
+  },
+  "data": null,
+  "detail": null,
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": {
+    "coordinates": {},
+    "cpu_threads": null,
+    "device": "cuda",
+    "device_name": "NVIDIA GeForce RTX 4090",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "platform_key": "Linux-x86_64",
+    "precision": "float32-matmul-high",
+    "torch_version": "2.13.0+cu130",
+    "workload": {
+      "benchmark": "novelty-dose-response",
+      "benchmark_version": 2,
+      "configuration_sha256": "1b4ebd71e91131478a263afd9f19466e6b9a9abeb5fe1a28f27abfb009902241"
+    },
+    "workload_sha256": "8990e01bc29fc2cb9974c0185f64920b069e2a2ea901f2f8b989bbdec5f3d5e3"
+  },
+  "kind": "benchmark-cost",
+  "measurements": [
+    {
+      "dispersion": null,
+      "fingerprint": "7f73532aeb2e82732d0b12e2f76618f6376851f551458bb83abc9145cd01d4f9",
+      "metric": "benchmark.wall_clock_seconds",
+      "sample_size": null,
+      "value": 78.19280770595651
+    }
+  ],
+  "recorded_at": "2026-10-21T08:04:54.164596Z",
+  "result_id": "859272dd93296a91"
+}

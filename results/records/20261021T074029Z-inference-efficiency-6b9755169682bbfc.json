@@ -1,0 +1,163 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "inference-efficiency",
+    "version": 3
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "model.run_path=\"arm-495-combined\"",
+      "model.checkpoint=\"step-00069465.pt\""
+    ],
+    "sha256": "c11e3b7db52791310bcb9a7ec89fa9bade45ea98efdf0b11249235b310bebc33",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/evaluation/inference-efficiency.toml"
+  },
+  "data": null,
+  "detail": {
+    "bytes": 2855,
+    "description": "What this checkpoint costs to play with on the cpu.",
+    "path": "inference-efficiency/arm-495-combined-step-00069465/20261021T074029Z-cpu.json",
+    "sha256": "e099a5292fb4cd60861afc85a819ed37f26766b6ad52c588afa5effe64442089"
+  },
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": {
+    "coordinates": {},
+    "cpu_threads": 16,
+    "device": "cpu",
+    "device_name": "x86_64",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "platform_key": "Linux-x86_64",
+    "precision": "float32-matmul-high",
+    "torch_version": "2.13.0+cu130",
+    "workload": {
+      "benchmark_version": 3,
+      "device": "cpu",
+      "latency_reference_plies": 40,
+      "latency_seed": "anthro-inference-latency-v1",
+      "serving_batch_size": 64,
+      "target_rating": 1500,
+      "temperature": 1.0,
+      "throughput_history_plies": 40,
+      "throughput_seed": "anthro-inference-throughput-v1"
+    },
+    "workload_sha256": "92e3916673647857e98bb627a47a632e250568c24075c546460cdddaeb3cb862"
+  },
+  "kind": "inference-efficiency",
+  "measurements": [
+    {
+      "dispersion": {
+        "bound": 9.810949099879243,
+        "estimator": "repeated-process-replicates",
+        "source": "the mean of 6 process replicates on x86_64 (cpu, torch 2.13.0+cu130)",
+        "units": null,
+        "value": 4.695902383410067
+      },
+      "fingerprint": "f2535693902414c88e7d65f54d55c760e317e5abb0adaadb708e2c57b8d6851c",
+      "metric": "inference.batch_throughput_per_second",
+      "sample_size": 30,
+      "value": 1202.9936761257215
+    },
+    {
+      "dispersion": {
+        "bound": 0.00800822210843584,
+        "estimator": "repeated-process-replicates",
+        "source": "the mean of 6 process replicates on x86_64 (cpu, torch 2.13.0+cu130)",
+        "units": null,
+        "value": 0.0038330470276666624
+      },
+      "fingerprint": "1382e0ad296c8c546fa7ad72679ba2ef1dadec298a08c29136b9ba4db604095e",
+      "metric": "inference.decision_overhead_ms",
+      "sample_size": 30,
+      "value": 0.2679478257050505
+    },
+    {
+      "dispersion": {
+        "bound": 0.6553819049948036,
+        "estimator": "repeated-process-replicates",
+        "source": "the mean of 6 process replicates on x86_64 (cpu, torch 2.13.0+cu130)",
+        "units": null,
+        "value": 0.31369130737278095
+      },
+      "fingerprint": "4f96880c5ae4c31c0e7fda13b5b21a737c80f9e1882dca4363dc6d5674091786",
+      "metric": "inference.move_latency_mean_ms",
+      "sample_size": 100,
+      "value": 5.111705807309288
+    },
+    {
+      "dispersion": {
+        "bound": 0.7416157634638628,
+        "estimator": "repeated-process-replicates",
+        "source": "the mean of 6 process replicates on x86_64 (cpu, torch 2.13.0+cu130)",
+        "units": null,
+        "value": 0.3549661909128949
+      },
+      "fingerprint": "cedbde2c09aa16e55672c771d6adf8e9cfa3c7ec5afa1662fd311e28a6ee1aed",
+      "metric": "inference.move_latency_p50_ms",
+      "sample_size": 100,
+      "value": 5.072752333944663
+    },
+    {
+      "dispersion": {
+        "bound": 0.6693621034832326,
+        "estimator": "repeated-process-replicates",
+        "source": "the mean of 6 process replicates on x86_64 (cpu, torch 2.13.0+cu130)",
+        "units": null,
+        "value": 0.32038277490910394
+      },
+      "fingerprint": "8d4e0978cb80ac43c62cf470c59c5fc26ba35a0387250d535a30ef74542ba7a0",
+      "metric": "inference.move_latency_p90_ms",
+      "sample_size": 100,
+      "value": 5.350947323798512
+    },
+    {
+      "dispersion": {
+        "bound": 0.672640902092364,
+        "estimator": "repeated-process-replicates",
+        "source": "the mean of 6 process replicates on x86_64 (cpu, torch 2.13.0+cu130)",
+        "units": null,
+        "value": 0.3219521356352269
+      },
+      "fingerprint": "a2f12f66aaf9a2b7c78fc0f47d97f117fcb7f80c598f6dac8e86778446770d31",
+      "metric": "inference.move_latency_p99_ms",
+      "sample_size": 100,
+      "value": 5.548635683953765
+    }
+  ],
+  "recorded_at": "2026-10-21T07:40:29.048858Z",
+  "result_id": "6b9755169682bbfc"
+}

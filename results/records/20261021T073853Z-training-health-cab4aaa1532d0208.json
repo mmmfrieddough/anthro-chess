@@ -1,0 +1,82 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "training-health",
+    "version": 1
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "run_name=\"arm-495-combined\"",
+      "model.clock_inputs=true",
+      "train.loader.selection.rating_balance=4.0",
+      "train.streaming.interleaved_row_groups=16"
+    ],
+    "sha256": "ca16df9bcec2fb2cc537c1087654b7a1994147466d659e027cc3aa89cb9217c5",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/training/ablation-vehicle.toml"
+  },
+  "data": null,
+  "detail": null,
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": null,
+  "kind": "training-health",
+  "measurements": [
+    {
+      "dispersion": null,
+      "fingerprint": "a23297bf2e1cfa94896e154286f0d813cec44dfe47a1bd231b7b072953ec371e",
+      "metric": "training_health.clip_rate",
+      "sample_size": null,
+      "value": 0.0
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "03b34284d9e8b47d19c076e6a4ec7d7d9d0fc2018d166b7f5872130be7e99339",
+      "metric": "training_health.gradient_norm",
+      "sample_size": null,
+      "value": 0.15931926667690277
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "41826bdfb1c7998ed504aecc4a8444a385990fa44cf2f2f54041933ab67a3580",
+      "metric": "training_health.update_to_weight_ratio",
+      "sample_size": null,
+      "value": 4.568408229488341e-08
+    }
+  ],
+  "recorded_at": "2026-10-21T07:38:53.706243Z",
+  "result_id": "cab4aaa1532d0208"
+}

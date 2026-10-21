@@ -1,0 +1,81 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "checkpoint-evaluation",
+    "version": 3
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "model.run_path=\"arm-495-combined\"",
+      "model.checkpoint=\"step-00069465.pt\""
+    ],
+    "sha256": "9bb269007c5e46469e2b1c576b323419d53f261cbf3c61d450a72fc9b67a60e3",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/evaluation/lichess-univ-2018-01-2021-06-checkpoint.toml"
+  },
+  "data": null,
+  "detail": null,
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": {
+    "coordinates": {},
+    "cpu_threads": null,
+    "device": "cuda",
+    "device_name": "NVIDIA GeForce RTX 4090",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "platform_key": "Linux-x86_64",
+    "precision": "float32-matmul-high",
+    "torch_version": "2.13.0+cu130",
+    "workload": {
+      "benchmark": "checkpoint-evaluation",
+      "benchmark_version": 3,
+      "configuration_sha256": "7bb8a7387d381db40784c9b9874819514d86bdfec1401c06b8ee5ac0788e80db"
+    },
+    "workload_sha256": "50f84383687eafbbe5924dc9fb2d32753ab41a4859127ee577ad817e7ce44aa0"
+  },
+  "kind": "benchmark-cost",
+  "measurements": [
+    {
+      "dispersion": null,
+      "fingerprint": "9a889abeb0288e63523713d195c387268e645dad93e137f7d69b7d50f636f7a0",
+      "metric": "benchmark.wall_clock_seconds",
+      "sample_size": null,
+      "value": 1253.063606663025
+    }
+  ],
+  "recorded_at": "2026-10-21T08:00:45.544720Z",
+  "result_id": "765c47aaa1616aa0"
+}

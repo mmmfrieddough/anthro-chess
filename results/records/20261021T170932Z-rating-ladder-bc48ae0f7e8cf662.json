@@ -1,0 +1,187 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "rating-ladder",
+    "version": 2
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "time_control=\"60+0\"",
+      "openings.view.speed=\"bullet\"",
+      "openings.view.rating_namespace=\"lichess_bullet\"",
+      "model.run_path=\"arm-495-combined\"",
+      "model.checkpoint=\"step-00069465.pt\""
+    ],
+    "sha256": "c9c96d9e2e92dc1e7ac846dddd6c9332cba9c72e73a7a0943ba97e4e5e9e70b7",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/evaluation/rating-ladder.toml"
+  },
+  "data": {
+    "components": [
+      {
+        "content_sha256": "aec797da1f0cf126eacf6b554ea94b1cb3f39e67fb5a8ff95ee646e3d53d3cc8",
+        "games": 48,
+        "projection": "move_prediction",
+        "projection_version": 1
+      }
+    ],
+    "game_ids_sha256": "0f810c20dfa5fdce250e10b4d59037eae18fa896ed28cb71fbb830bbbf958efd",
+    "pool_id": "lichess-univ-2018-01-2021-06-test",
+    "pool_version": 1,
+    "selected_games": 48,
+    "view": "ladder-openings-48"
+  },
+  "detail": {
+    "bytes": 39817190,
+    "description": "Rating-ladder seat: 1950@t0",
+    "path": "rating-ladder/arm-495-combined-step-00069465/20261021T170932Z-seat-1950-t0.json",
+    "sha256": "fdaf9b850a0064b81988f1649518768a4c8d9c4e74e6f98203176de154885dd8"
+  },
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": {
+    "coordinates": {},
+    "cpu_threads": null,
+    "device": "cuda",
+    "device_name": "NVIDIA GeForce RTX 4090",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "platform_key": "Linux-x86_64",
+    "precision": "float32-matmul-high",
+    "torch_version": "2.13.0+cu130",
+    "workload": {
+      "ablation": "absent",
+      "claim_draws": false,
+      "conditioning": "conditioned",
+      "conditioning_kind": "true",
+      "draw_claim_enabled": false,
+      "fit_maximum_spread": 1200.0,
+      "fit_model": "bradley-terry",
+      "fit_scale": 400.0,
+      "generation_version": 1,
+      "maximum_generated_plies": 300,
+      "pairing": "round-robin",
+      "positions": {
+        "game_ids_sha256": "0f810c20dfa5fdce250e10b4d59037eae18fa896ed28cb71fbb830bbbf958efd",
+        "kind": "human-prefix",
+        "pool_id": "lichess-univ-2018-01-2021-06-test",
+        "pool_version": 1,
+        "prefix_plies": 8,
+        "view": "ladder-openings-48"
+      },
+      "reference_temperature": 1.0,
+      "resignation_enabled": false,
+      "swap_colors": true,
+      "target_rating": 1950,
+      "target_ratings": [
+        1050,
+        1200,
+        1350,
+        1500,
+        1650,
+        1800,
+        1950,
+        2100
+      ],
+      "temperature": 0.0,
+      "temperatures": [
+        0.0,
+        0.7,
+        1.0
+      ],
+      "time_control": "60+0"
+    },
+    "workload_sha256": "d8f7c2203091ac3cd97102011cbac4bfd81e6a9170a002b7e6e4b5ba1d8a7548"
+  },
+  "kind": "rating-ladder",
+  "measurements": [
+    {
+      "dispersion": {
+        "bound": 7.341359975837536,
+        "estimator": "refit-over-resampled-games",
+        "source": "rating-ladder v2 refit-over-resampled-games",
+        "units": null,
+        "value": 7.070452776640871
+      },
+      "fingerprint": "530fdf235be1e27f78834eafaae2846a012cf15e036749dc997348c5580755c6",
+      "metric": "ladder.fitted_rating",
+      "sample_size": 2496,
+      "value": 2039.974472324083
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "946fbf68478fa06db36973ef1dc445c07e7b1dfc82aaa9993bd1e60d4a02023b",
+      "metric": "ladder.policy_regret",
+      "sample_size": 92398,
+      "value": 0.0
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "46d13048db3123aa6f3b537dcee153cdb9a4f5c90f985d6703238257086332c0",
+      "metric": "ladder.preferred_selection_rate",
+      "sample_size": 92398,
+      "value": 1.0
+    },
+    {
+      "dispersion": {
+        "bound": 0.004166590766207074,
+        "estimator": "refit-over-resampled-games",
+        "source": "rating-ladder v2 refit-over-resampled-games",
+        "units": null,
+        "value": 0.004012837314750272
+      },
+      "fingerprint": "bf778fb191eea2b968800b20751eceeb66c80f6d45aa4189761456ace3da3619",
+      "metric": "ladder.score_rate",
+      "sample_size": 2496,
+      "value": 0.8467548076923077
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "5906ce4cad609d90ba867b56e3b561d2d5c748b3107968591f206c5a7b9be175",
+      "metric": "ladder.scored_game_rate",
+      "sample_size": 2496,
+      "value": 1.0
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "ffe9f83d29294bdbb847549b6ac3bae1952d9884572131e0fc94833f12c4ff6b",
+      "metric": "ladder.selected_rank",
+      "sample_size": 92398,
+      "value": 1.0
+    }
+  ],
+  "recorded_at": "2026-10-21T17:09:32.554295Z",
+  "result_id": "bc48ae0f7e8cf662"
+}

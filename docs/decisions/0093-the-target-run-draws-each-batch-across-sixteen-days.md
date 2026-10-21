@@ -8,6 +8,8 @@ Accepted. Answers `#574`. Refines
 `0092-the-rating-axis-is-balanced-by-thinning-at-four.md`, which found that a
 loader-seed change alone moves held-out loss by several times the replicates'
 spread and left that noise to `#574`.
+`0104-the-accepted-set-composes-and-the-ladder-reads-two-speeds.md` adopts it
+with the rest of the accepted set.
 
 ## Context
 

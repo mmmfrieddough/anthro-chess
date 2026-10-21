@@ -10,6 +10,9 @@ reweighting because the model is conditioned on it and closes speed until
 `#497` gives the model the clock. Refined by
 `0093-the-target-run-draws-each-batch-across-sixteen-days.md`, which finds that
 most of the draw noise below came from training on one day at a time.
+`0104-the-accepted-set-composes-and-the-ladder-reads-two-speeds.md` reads the
+balance beside the clock: its tail gain survives and its slope gain at blitz
+does not.
 
 ## Context
 

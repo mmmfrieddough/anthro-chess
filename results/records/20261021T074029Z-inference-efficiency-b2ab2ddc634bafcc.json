@@ -1,0 +1,203 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "inference-efficiency",
+    "version": 3
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "model.run_path=\"arm-495-combined\"",
+      "model.checkpoint=\"step-00069465.pt\""
+    ],
+    "sha256": "c11e3b7db52791310bcb9a7ec89fa9bade45ea98efdf0b11249235b310bebc33",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/evaluation/inference-efficiency.toml"
+  },
+  "data": null,
+  "detail": {
+    "bytes": 4357,
+    "description": "What this checkpoint costs to play with on the cuda.",
+    "path": "inference-efficiency/arm-495-combined-step-00069465/20261021T074029Z-cuda.json",
+    "sha256": "00d6dde5301664b9625c8d4d57b94f8ecc5c879a85a126b3436ad0f053fabf50"
+  },
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": {
+    "coordinates": {},
+    "cpu_threads": null,
+    "device": "cuda",
+    "device_name": "NVIDIA GeForce RTX 4090",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "platform_key": "Linux-x86_64",
+    "precision": "float32-matmul-high",
+    "torch_version": "2.13.0+cu130",
+    "workload": {
+      "benchmark_version": 3,
+      "device": "cuda",
+      "latency_reference_plies": 40,
+      "latency_seed": "anthro-inference-latency-v1",
+      "serving_batch_size": 64,
+      "target_rating": 1500,
+      "temperature": 1.0,
+      "throughput_history_plies": 40,
+      "throughput_seed": "anthro-inference-throughput-v1"
+    },
+    "workload_sha256": "bfd1723691b54ac4971bdf7cf315ceefd9c9dc21fd599e94efdd975f237bb0fb"
+  },
+  "kind": "inference-efficiency",
+  "measurements": [
+    {
+      "dispersion": {
+        "bound": 83.8204171891161,
+        "estimator": "repeated-process-replicates",
+        "source": "the mean of 6 process replicates on NVIDIA GeForce RTX 4090 (cuda, torch 2.13.0+cu130)",
+        "units": null,
+        "value": 40.11971653809122
+      },
+      "fingerprint": "9a5048f8e2cb82b3ff8c2476aaf16230a5c2200cb14dde78fb8c80699c16e1eb",
+      "metric": "inference.batch_throughput_per_second",
+      "sample_size": 30,
+      "value": 3122.9872021326423
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "29845ac9f6baf2b9e63248682fa8250f5e44b1686b80f77ab62d2c43af5f9f1c",
+      "metric": "inference.decision_gflops",
+      "sample_size": 1,
+      "value": 0.167163904
+    },
+    {
+      "dispersion": {
+        "bound": 0.010017532302179015,
+        "estimator": "repeated-process-replicates",
+        "source": "the mean of 6 process replicates on NVIDIA GeForce RTX 4090 (cuda, torch 2.13.0+cu130)",
+        "units": null,
+        "value": 0.0047947811506094526
+      },
+      "fingerprint": "ddd6295683bf0f7dc685abb83b23d25e72846458f9485eba1d16d10ce053f3db",
+      "metric": "inference.decision_overhead_ms",
+      "sample_size": 30,
+      "value": 0.2404853139523766
+    },
+    {
+      "dispersion": {
+        "bound": 0.0013780544147566915,
+        "estimator": "repeated-process-replicates",
+        "source": "the mean of 6 process replicates on NVIDIA GeForce RTX 4090 (cuda, torch 2.13.0+cu130)",
+        "units": null,
+        "value": 0.0006595905192092335
+      },
+      "fingerprint": "01f68bec5ac7a4ec6325c03bb13dc97f1d8b30f5bb1615661bc0f2feaa10b650",
+      "metric": "inference.first_decision_seconds",
+      "sample_size": 1,
+      "value": 0.26534235483268276
+    },
+    {
+      "dispersion": {
+        "bound": 0.05520167890046208,
+        "estimator": "repeated-process-replicates",
+        "source": "the mean of 6 process replicates on NVIDIA GeForce RTX 4090 (cuda, torch 2.13.0+cu130)",
+        "units": null,
+        "value": 0.026421673670706095
+      },
+      "fingerprint": "ee8ff3fe9904654aabc44b6537314e83d46854d823a65ac7d15812c55b8f6803",
+      "metric": "inference.model_load_seconds",
+      "sample_size": 1,
+      "value": 1.2407796788417425
+    },
+    {
+      "dispersion": {
+        "bound": 0.09839031715866836,
+        "estimator": "repeated-process-replicates",
+        "source": "the mean of 6 process replicates on NVIDIA GeForce RTX 4090 (cuda, torch 2.13.0+cu130)",
+        "units": null,
+        "value": 0.047093438172617776
+      },
+      "fingerprint": "eea03a96deb4797b65caf36217f6466cf43271c76326e912af650b3fcd4a62d7",
+      "metric": "inference.move_latency_mean_ms",
+      "sample_size": 100,
+      "value": 5.108886275362845
+    },
+    {
+      "dispersion": {
+        "bound": 0.07652799029771043,
+        "estimator": "repeated-process-replicates",
+        "source": "the mean of 6 process replicates on NVIDIA GeForce RTX 4090 (cuda, torch 2.13.0+cu130)",
+        "units": null,
+        "value": 0.03662927698208363
+      },
+      "fingerprint": "3dbd96e64db7e77728942fddc22d98b95058924abe28861d340b0cc466bcccf3",
+      "metric": "inference.move_latency_p50_ms",
+      "sample_size": 100,
+      "value": 5.081482483850171
+    },
+    {
+      "dispersion": {
+        "bound": 0.20213122733560482,
+        "estimator": "repeated-process-replicates",
+        "source": "the mean of 6 process replicates on NVIDIA GeForce RTX 4090 (cuda, torch 2.13.0+cu130)",
+        "units": null,
+        "value": 0.09674787857359811
+      },
+      "fingerprint": "6bf939b9882ca244692e431b9c6279891d621e6538cb794208d69662c5da089c",
+      "metric": "inference.move_latency_p90_ms",
+      "sample_size": 100,
+      "value": 5.205787147860974
+    },
+    {
+      "dispersion": {
+        "bound": 0.2888223432343077,
+        "estimator": "repeated-process-replicates",
+        "source": "the mean of 6 process replicates on NVIDIA GeForce RTX 4090 (cuda, torch 2.13.0+cu130)",
+        "units": null,
+        "value": 0.13824162333007717
+      },
+      "fingerprint": "66656128d19d64a92f3203d882c75b7fbc36c11d7fb3247255976c2b71d0c9dc",
+      "metric": "inference.move_latency_p99_ms",
+      "sample_size": 100,
+      "value": 5.386867675503406
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "06270d671eeb8dac4112ed5adb86a5c979b7343b6c4dd9ae23a1a79ef49dda7e",
+      "metric": "inference.parameters",
+      "sample_size": 1,
+      "value": 1440838.0
+    }
+  ],
+  "recorded_at": "2026-10-21T07:40:29.048858Z",
+  "result_id": "b2ab2ddc634bafcc"
+}

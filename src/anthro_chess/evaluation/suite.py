@@ -95,6 +95,10 @@ class SuiteBenchmarkConfig(ConfigModel):
     the order and whether this sweep commits its reading.
     """
 
+    #: The registered benchmark this step runs, when the step is named
+    #: something else. One benchmark can then run as several steps, each under
+    #: its own overrides.
+    benchmark: str | None = None
     #: The benchmark's existing selection file. Absent only for a benchmark
     #: that reads another step's output rather than a configuration of its own.
     config: Path | None = None
@@ -116,8 +120,9 @@ class SuiteConfig(CheckpointSelection):
     name: str = Field(
         default="checkpoint", min_length=1, pattern=r"^[a-z0-9][a-z0-9_-]*$"
     )
-    #: Keyed by benchmark name so one step can be adjusted from the command
-    #: line without restating the sweep.
+    #: Keyed by step name, which is the benchmark name unless the step says
+    #: otherwise, so one step can be adjusted from the command line without
+    #: restating the sweep.
     benchmarks: dict[str, SuiteBenchmarkConfig] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -282,7 +287,9 @@ def resolve_suite(
     entries = {
         name: entry for name, entry in config.benchmarks.items() if entry.enabled
     }
-    unknown = sorted(set(entries) - set(known))
+    unknown = sorted(
+        {entry.benchmark or name for name, entry in entries.items()} - set(known)
+    )
     if unknown:
         raise SuiteError(
             f"unknown benchmark(s) {', '.join(unknown)}; this build runs "
@@ -300,7 +307,7 @@ def resolve_suite(
     steps: list[PlannedBenchmark] = []
     for name in ordered:
         entry = entries[name]
-        benchmark = known[name]
+        benchmark = known[entry.benchmark or name]
         record = _step_records(
             name,
             entry,
@@ -571,7 +578,8 @@ def _order(
     """
 
     blockers = {
-        name: _blockers(name, entries[name], known[name], entries) for name in entries
+        name: _blockers(name, entry, known[entry.benchmark or name], entries)
+        for name, entry in entries.items()
     }
     remaining = list(entries)
     ordered: list[str] = []

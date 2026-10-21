@@ -1,0 +1,113 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "game-termination",
+    "version": 2
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "model.run_path=\"arm-495-combined\"",
+      "model.checkpoint=\"step-00069465.pt\""
+    ],
+    "sha256": "e6e493cc5747ba0c684a723fb5bb79c9a513924728c2009347fb59134e8e01cb",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/evaluation/game-termination.toml"
+  },
+  "data": {
+    "components": [
+      {
+        "content_sha256": "1435acfb72c5223712d48a85a81c7d938ddd18cae7851552bef7eb0509225e0f",
+        "games": 4096,
+        "projection": "termination_prediction",
+        "projection_version": 1
+      }
+    ],
+    "game_ids_sha256": "a4ff3652878e9509556d5c7865f46e15b29a3cfbc6f91f8d593a168d07da18c6",
+    "pool_id": "lichess-univ-2018-01-2021-06-test",
+    "pool_version": 1,
+    "selected_games": 4096,
+    "view": "termination-held-out-4096"
+  },
+  "detail": {
+    "bytes": 50847799,
+    "description": "Held-out resignation prediction",
+    "path": "game-termination/arm-495-combined-step-00069465/20261021T081742Z-held-out-resignation.json",
+    "sha256": "64466d83dba0b8e1bf027c350cc8cb00b72d8f5f9b961ed8e91e373f4bb305f0"
+  },
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": null,
+  "kind": "game-termination",
+  "measurements": [
+    {
+      "dispersion": null,
+      "fingerprint": "7266fb96ff0b110920dae96b98fadc06ac5eda06bd907312ad2ce76b64b20bcd",
+      "metric": "termination.resignation_calibration_error",
+      "sample_size": 275050,
+      "value": 0.0002885204286748888
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "757e3b984b178094cd7990836eb5ff0cdf5eda8f964e6d4a15565dae0db5c52d",
+      "metric": "termination.resignation_calibration_gap",
+      "sample_size": 275050,
+      "value": 0.00012282727263541652
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "ee99f56cc0b22e94b5a25ce7c4483d1ff6c9247a52cd49a256a1dccd16c50ac5",
+      "metric": "termination.resignation_mass_at_moves",
+      "sample_size": 273628,
+      "value": 0.004198788532758188
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "ddbecd024f45f3364b37d82719e16189eea638234f03519b59e6e7aaa903bf08",
+      "metric": "termination.resignation_mass_at_resignation",
+      "sample_size": 1364,
+      "value": 0.18246046283798895
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "9fd455b4e9ec375ad7bfd37a287b14f2c1bf39239de749dc3dcf835ebf578a4b",
+      "metric": "termination.resignation_mass_separation",
+      "sample_size": 1364,
+      "value": 0.17826167430523077
+    }
+  ],
+  "recorded_at": "2026-10-21T08:17:42.713292Z",
+  "result_id": "9f56f7337916c795"
+}

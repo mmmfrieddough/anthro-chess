@@ -353,6 +353,53 @@ def test_an_unknown_benchmark_names_what_this_build_runs(tmp_path: Path) -> None
         )
 
 
+def test_one_benchmark_runs_as_two_steps_under_their_own_overrides(
+    tmp_path: Path,
+) -> None:
+    recorder = Recorder()
+    selection = str(_selection(tmp_path))
+    plan = resolve_suite(
+        _suite(
+            benchmarks={
+                "beta": {"config": selection},
+                "beta-small": {
+                    "benchmark": "beta",
+                    "config": selection,
+                    "overrides": ["games_per_position=1"],
+                },
+            }
+        ),
+        registry=_registry(recorder),
+    )
+
+    assert [step.name for step in plan.steps] == ["beta", "beta-small"]
+    sizes = [
+        step.resolved.value.games_per_position
+        for step in plan.steps
+        if step.resolved is not None
+    ]
+    assert sizes == [4, 1]
+
+    run = run_suite(plan, sweep_root=tmp_path / "sweep", store=cast("Any", FakeStore()))
+    assert recorder.calls == ["beta", "beta"]
+    assert [outcome.status for outcome in run.outcomes] == [StepStatus.COMPLETED] * 2
+
+
+def test_a_step_naming_an_unknown_benchmark_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(SuiteError, match="unknown benchmark"):
+        resolve_suite(
+            _suite(
+                benchmarks={
+                    "beta-small": {
+                        "benchmark": "delta",
+                        "config": str(_selection(tmp_path)),
+                    }
+                }
+            ),
+            registry=_registry(Recorder()),
+        )
+
+
 def test_a_step_with_no_result_kind_cannot_be_asked_to_record(
     tmp_path: Path,
 ) -> None:

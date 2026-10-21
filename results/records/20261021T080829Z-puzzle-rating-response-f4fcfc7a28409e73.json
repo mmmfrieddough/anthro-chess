@@ -1,0 +1,170 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "puzzle-rating-response",
+    "version": 2
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "model.run_path=\"arm-495-combined\"",
+      "model.checkpoint=\"step-00069465.pt\""
+    ],
+    "sha256": "82bdd587652bb525239a03568d2480a638c8e0b69371392d3715b245064ab343",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/evaluation/puzzle-rating-response.toml"
+  },
+  "data": {
+    "components": [
+      {
+        "content_sha256": "fe76b278a7bf9a60d38cdcd4dd00cbe0df69e48a5a23241e869d7c4c86c4ae4a",
+        "games": 200000,
+        "projection": "puzzle_response",
+        "projection_version": 1
+      }
+    ],
+    "game_ids_sha256": "1f4d7d8221a1f219ab27711b87344fdc768b7268781b89884b68069da8658907",
+    "pool_id": "anthro-lichess-puzzles",
+    "pool_version": 1,
+    "selected_games": 200000,
+    "view": "canonical"
+  },
+  "detail": {
+    "bytes": 11028,
+    "description": "Puzzle-rating grid and rating-band response.",
+    "path": "puzzle-rating-response/arm-495-combined-step-00069465/20261021T080829Z.json",
+    "sha256": "82450ff7c5cb9f8d09ad76c01fe994feee3aa81ee2f437ce8fc3cbfb6b9e46fb"
+  },
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": null,
+  "kind": "puzzle-rating-response",
+  "measurements": [
+    {
+      "dispersion": {
+        "bound": 0.0009513674188181743,
+        "estimator": "bootstrap-over-puzzles",
+        "source": "stratified bootstrap over 200000 scored puzzle(s)",
+        "units": 200000,
+        "value": 0.0009489687208573196
+      },
+      "fingerprint": "5813657f4ca6d347b11675946ca094af50259eff17ea9b979ce34028e633de7b",
+      "metric": "puzzle.greedy_first_move_accuracy",
+      "sample_size": 800000,
+      "value": 0.58566125
+    },
+    {
+      "dispersion": {
+        "bound": 0.0007572086726174876,
+        "estimator": "bootstrap-over-puzzles",
+        "source": "stratified bootstrap over 200000 scored puzzle(s)",
+        "units": 200000,
+        "value": 0.0007552995102234197
+      },
+      "fingerprint": "80cd689bde84648d087346762b61c405a0c25ba95551fb7a883558ddd18d2ab1",
+      "metric": "puzzle.greedy_line_completion",
+      "sample_size": 800000,
+      "value": 0.40896875
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "8d736e3973022472f82510336208b4fa6a548d82a9549b49ef0d6992c711f247",
+      "metric": "puzzle.greedy_rating_order_accuracy",
+      "sample_size": 4,
+      "value": 1.0
+    },
+    {
+      "dispersion": {
+        "bound": 0.0015456005908299647,
+        "estimator": "bootstrap-over-puzzles",
+        "source": "stratified bootstrap over 200000 scored puzzle(s)",
+        "units": 200000,
+        "value": 0.001541703643223618
+      },
+      "fingerprint": "8b86f03810eaadc7cdb7827ef73a6171b6bb34e1abd5ec859f93a798d0e82105",
+      "metric": "puzzle.greedy_rating_slope",
+      "sample_size": 4,
+      "value": 0.16673291145832206
+    },
+    {
+      "dispersion": {
+        "bound": 0.0005880194573425874,
+        "estimator": "bootstrap-over-puzzles",
+        "source": "stratified bootstrap over 200000 scored puzzle(s)",
+        "units": 200000,
+        "value": 0.0005865368744357407
+      },
+      "fingerprint": "216a2ba520926de5cf79f6321e5e756d09bb9f19323cd661cf18772927551463",
+      "metric": "puzzle.sampled_first_move_solve_rate",
+      "sample_size": 800000,
+      "value": 0.43014554805766164
+    },
+    {
+      "dispersion": {
+        "bound": 0.0003740398364840573,
+        "estimator": "bootstrap-over-puzzles",
+        "source": "stratified bootstrap over 200000 scored puzzle(s)",
+        "units": 200000,
+        "value": 0.00037309676383377955
+      },
+      "fingerprint": "075ba9bf3b9d2e12704d9fe41a50db496370c0ed21a5ff9e156ffce37f755763",
+      "metric": "puzzle.sampled_line_completion",
+      "sample_size": 800000,
+      "value": 0.2518398786479114
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "bc293e0c6787860213d87a24f66763925cde713b4be1fa76a84fbb0226f5ced0",
+      "metric": "puzzle.sampled_rating_order_accuracy",
+      "sample_size": 4,
+      "value": 1.0
+    },
+    {
+      "dispersion": {
+        "bound": 0.0005477216595459051,
+        "estimator": "bootstrap-over-puzzles",
+        "source": "stratified bootstrap over 200000 scored puzzle(s)",
+        "units": 200000,
+        "value": 0.0005463406801241999
+      },
+      "fingerprint": "b20d8765dbc5ed29bd906df6f15ed559dc743e12a561cf7c977e9824df951168",
+      "metric": "puzzle.sampled_rating_slope",
+      "sample_size": 4,
+      "value": 0.20243050547220592
+    }
+  ],
+  "recorded_at": "2026-10-21T08:08:29.493390Z",
+  "result_id": "f4fcfc7a28409e73"
+}

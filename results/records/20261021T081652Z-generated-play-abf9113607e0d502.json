@@ -1,0 +1,551 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "generated-play-rollout",
+    "version": 1
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "model.run_path=\"arm-495-combined\"",
+      "model.checkpoint=\"step-00069465.pt\""
+    ],
+    "sha256": "e908084f3e0ac627cfaee48a402e5e8db976532b8f9f7775532e007f9bb90aef",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/evaluation/generated-play-rollout.toml"
+  },
+  "data": null,
+  "detail": {
+    "bytes": 181643,
+    "description": "Human-reference curves: standard-start temperature=1",
+    "path": "generated-play/arm-495-combined-step-00069465/20261021T081652Z-standard-start-curves-t1_0.json",
+    "sha256": "33e8708acdeaa28fa85d550f73e4efda3c72be494253b6f4e1c7e040ba70d3d0"
+  },
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": {
+    "coordinates": {},
+    "cpu_threads": null,
+    "device": "cuda",
+    "device_name": "NVIDIA GeForce RTX 4090",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "platform_key": "Linux-x86_64",
+    "precision": "float32-matmul-high",
+    "torch_version": "2.13.0+cu130",
+    "workload": {
+      "claim_draws": false,
+      "curve_neighbours": {
+        "book-available-depth": 1024,
+        "book-consumed-fraction": 1024,
+        "book-depth": 1024,
+        "cycle": 1024,
+        "game-length": 1024,
+        "move-diversity": 1024,
+        "repertoire": 1024,
+        "repetition": 1024,
+        "result": 1024,
+        "termination": 1024,
+        "waypoint": 1024
+      },
+      "curve_spec_version": 1,
+      "draw_claim_enabled": true,
+      "generation_version": 1,
+      "maximum_generated_plies": 300,
+      "opening_level": "family",
+      "positions": {
+        "kind": "standard-start"
+      },
+      "reference": {
+        "game_ids_sha256": "070f1fbe5f48814b56c0894f118cad1852f9dce22a1ed05f4dc553f51d5e1b72",
+        "maximum_rating_gap": 200,
+        "view": "rollout-reference-12000"
+      },
+      "resignation_enabled": true,
+      "swap_colors": true,
+      "target_ratings": [
+        1100,
+        1300,
+        1500,
+        1700,
+        1900,
+        2100
+      ],
+      "temperature": 1.0,
+      "time_control": "180+0"
+    },
+    "workload_sha256": "9a8da3d58a0197f27bcb4b4eb776642fbb249f00c6b619ae135eed4514fbe151"
+  },
+  "kind": "generated-play",
+  "measurements": [
+    {
+      "dispersion": {
+        "bound": 0.0644507281199332,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-book-available-depth v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.06296594504472144
+      },
+      "fingerprint": "f49335269738a4411f9106c216660e08bdbbc011ffdea95c8ebb5e41b72237b0",
+      "metric": "generated_play.book_available_depth_conditional_distance",
+      "sample_size": 26330,
+      "value": 0.2808612436871991
+    },
+    {
+      "dispersion": {
+        "bound": 0.08906241177882256,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-book-available-depth v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.08701063726045466
+      },
+      "fingerprint": "a800189b111ec23c3c0d669231f80159095740a51fdd88eeab737031f9d5bd0e",
+      "metric": "generated_play.book_available_depth_pooled_distance",
+      "sample_size": 26330,
+      "value": 0.11199852517003173
+    },
+    {
+      "dispersion": {
+        "bound": 0.05510688015394462,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-book-available-depth v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.05383735589305432
+      },
+      "fingerprint": "4207d80ddb738654b8909f68691046104f44d2bed8a0e2cac7b05c899806c5ab",
+      "metric": "generated_play.book_available_depth_rating_variation",
+      "sample_size": 26330,
+      "value": 0.2533541748078676
+    },
+    {
+      "dispersion": {
+        "bound": 0.002524557675450758,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-book-consumed-fraction v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.0024663982004805144
+      },
+      "fingerprint": "f2bc5f045d5b32f7b2f75289105944b9925de0e76ddc2dcec73cf6895340614e",
+      "metric": "generated_play.book_consumed_fraction_conditional_distance",
+      "sample_size": 26330,
+      "value": 0.007768649600790943
+    },
+    {
+      "dispersion": {
+        "bound": 0.004666580998615485,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-book-consumed-fraction v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.004559074680409809
+      },
+      "fingerprint": "f66bfb9ca07cbeafc166d215636ac73b18ef449c74244b94bebfbbe8b3514a43",
+      "metric": "generated_play.book_consumed_fraction_pooled_distance",
+      "sample_size": 26330,
+      "value": 0.006593975321971424
+    },
+    {
+      "dispersion": {
+        "bound": 0.002728543221679642,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-book-consumed-fraction v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.0026656844315043806
+      },
+      "fingerprint": "ab7ae11161a37ad28ec31e28585986ac34a13461a34f15ab2fae360fe85cf82e",
+      "metric": "generated_play.book_consumed_fraction_rating_variation",
+      "sample_size": 26330,
+      "value": 0.020293050199719793
+    },
+    {
+      "dispersion": {
+        "bound": 0.032480347994843214,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-book-depth v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.03173208226710792
+      },
+      "fingerprint": "528a4f18de483425514092ab4d804a8327c6d0b8714c76dd37328de921c29598",
+      "metric": "generated_play.book_depth_conditional_distance",
+      "sample_size": 26330,
+      "value": 0.22900292581472984
+    },
+    {
+      "dispersion": {
+        "bound": 0.03936768793880937,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-book-depth v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.038460755178437896
+      },
+      "fingerprint": "2fceaa0e86f83dd56e32f9bf4278d3285461c7d77545db570c2e321994c3e2e1",
+      "metric": "generated_play.book_depth_pooled_distance",
+      "sample_size": 26330,
+      "value": 0.22611170144843573
+    },
+    {
+      "dispersion": {
+        "bound": 0.021565749358643513,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-book-depth v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.021068928599809147
+      },
+      "fingerprint": "29ae1563a9cbcc8fb2bcd6290f6b4b0098a2b0559bbe44952b4a7cd7baf76ba4",
+      "metric": "generated_play.book_depth_rating_variation",
+      "sample_size": 26330,
+      "value": 0.43454474404064075
+    },
+    {
+      "dispersion": {
+        "bound": 0.001073763838036529,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-cycle v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.0010490318552923924
+      },
+      "fingerprint": "9d53fe338d8bafeb8ef7e3171f475b1059a8f78a90dd094d64a3bbadff429d5c",
+      "metric": "generated_play.cycle_conditional_distance",
+      "sample_size": 26336,
+      "value": 0.010643356196060433
+    },
+    {
+      "dispersion": {
+        "bound": 0.0011164815109174352,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-cycle v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.0010907656127990466
+      },
+      "fingerprint": "90efd6a241b3c3a3d96fa95a3b0ff471d56d26502547d4773f11af71078d7619",
+      "metric": "generated_play.cycle_pooled_distance",
+      "sample_size": 26336,
+      "value": 0.0087230971981327
+    },
+    {
+      "dispersion": {
+        "bound": 0.000860170383023888,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-cycle v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.0008403580944028958
+      },
+      "fingerprint": "9c97e2f11a2a1cc2d479c8279dd0ac1bc5ac0dc6caa983867e3b6211a236f5b3",
+      "metric": "generated_play.cycle_rating_variation",
+      "sample_size": 26336,
+      "value": 0.0029482294208206055
+    },
+    {
+      "dispersion": {
+        "bound": 0.39270433030449936,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-game-length v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.3836591786830791
+      },
+      "fingerprint": "05d588872b3c293722e76995a8133e98c3aeeeb68545cf6939c65332bed64166",
+      "metric": "generated_play.game_length_conditional_distance",
+      "sample_size": 26336,
+      "value": 11.23949966680379
+    },
+    {
+      "dispersion": {
+        "bound": 0.3927043303044999,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-game-length v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.38365917868307964
+      },
+      "fingerprint": "606a63cdfda1ff11e365d3a0587c241c6d77d9f8a24f34fd8f8509b78313b3de",
+      "metric": "generated_play.game_length_pooled_distance",
+      "sample_size": 26336,
+      "value": 11.23949966680378
+    },
+    {
+      "dispersion": {
+        "bound": 0.30986328267140045,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-game-length v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.30272620737737305
+      },
+      "fingerprint": "86a872b4227955cff8cdffb0a9f2537c9c7b7d42a89223d9ef14a5a8afb265c8",
+      "metric": "generated_play.game_length_rating_variation",
+      "sample_size": 26336,
+      "value": 2.3631076388888914
+    },
+    {
+      "dispersion": {
+        "bound": 0.0006061635618819028,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-move-diversity v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.000592201807703255
+      },
+      "fingerprint": "101cd5899cbe4823caf118bb85ffad65ae4a552fdb5c7033b77aa90e9ea275b6",
+      "metric": "generated_play.move_diversity_conditional_distance",
+      "sample_size": 26336,
+      "value": 0.008990353185558131
+    },
+    {
+      "dispersion": {
+        "bound": 0.0006061635618819052,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-move-diversity v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.0005922018077032572
+      },
+      "fingerprint": "a8e8352c6161d272d244a8b06ceadd859ed6b348df8661f7949075069b8c6d4b",
+      "metric": "generated_play.move_diversity_pooled_distance",
+      "sample_size": 26336,
+      "value": 0.008990353185557964
+    },
+    {
+      "dispersion": {
+        "bound": 0.00024170272216113956,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-move-diversity v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.00023613558780445363
+      },
+      "fingerprint": "1c6f168bc006fe8a032370ddc2aad0beaacdc2c657fc270bc69e9374bfc04363",
+      "metric": "generated_play.move_diversity_rating_variation",
+      "sample_size": 26336,
+      "value": 0.000591812806262119
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "1421de04592acdec6e3faa638d3d626404bbdc8187f0874dad48c5e67c7cfc11",
+      "metric": "generated_play.premature_resignation_human_rate",
+      "sample_size": 4909,
+      "value": 0.11652067630882053
+    },
+    {
+      "dispersion": {
+        "bound": 0.005449780438853906,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-repertoire v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.005317248649809674
+      },
+      "fingerprint": "4a62dfc8b2c5d14128273d90b1fb6184391db734650a72653660e58fd3b547e0",
+      "metric": "generated_play.repertoire_conditional_distance",
+      "sample_size": 18505,
+      "value": 0.13125738032232928
+    },
+    {
+      "dispersion": {
+        "bound": 0.007750370597899928,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-repertoire v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.0075618913568331995
+      },
+      "fingerprint": "eca4c9edaf337df269a4640b658680b4d8dc377a3a34e95c4414e33c4d969b1e",
+      "metric": "generated_play.repertoire_pooled_distance",
+      "sample_size": 18505,
+      "value": 0.08305926675678878
+    },
+    {
+      "dispersion": {
+        "bound": 0.004313129370540195,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-repertoire v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.004208239502357335
+      },
+      "fingerprint": "2c022f5d97fd3e757d435556d5df47e30d54295931e33b3e15b91e3ddb2b2155",
+      "metric": "generated_play.repertoire_rating_variation",
+      "sample_size": 18505,
+      "value": 0.14690408490453122
+    },
+    {
+      "dispersion": {
+        "bound": 0.00010664316665502206,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-repetition v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.00010418685655771521
+      },
+      "fingerprint": "c3b5a89df2370f9582aeb89a4045dc62d1a650d6511e72cc0bd8e714dfbef85a",
+      "metric": "generated_play.repetition_conditional_distance",
+      "sample_size": 26336,
+      "value": 0.001165346362063076
+    },
+    {
+      "dispersion": {
+        "bound": 0.0001143486832585228,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-repetition v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.00011171489213892625
+      },
+      "fingerprint": "12623caefc18c3921c85cbd19090ccb7c2acf405c97b0f9c45f1e4bbf05958d1",
+      "metric": "generated_play.repetition_pooled_distance",
+      "sample_size": 26336,
+      "value": 0.0011036334079369344
+    },
+    {
+      "dispersion": {
+        "bound": 7.728832797579536e-05,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-repetition v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 7.550814733820203e-05
+      },
+      "fingerprint": "5c746b576218ec037d28a58e34025cda40bd1f14eca2230c6e0673045b9e85be",
+      "metric": "generated_play.repetition_rating_variation",
+      "sample_size": 26336,
+      "value": 0.00026479870208860243
+    },
+    {
+      "dispersion": {
+        "bound": 0.002924858483067871,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-result v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.0028574902713905705
+      },
+      "fingerprint": "7247e4d288d51904c5c69fcbb351bf506561afc44e8fe0b9063db51ae75b1f6e",
+      "metric": "generated_play.result_conditional_distance",
+      "sample_size": 26336,
+      "value": 0.061023859419922395
+    },
+    {
+      "dispersion": {
+        "bound": 0.0024754589996810543,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-result v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.0024184417980439785
+      },
+      "fingerprint": "fbe4d304ba002bd862da95c829aa6820053ad2e304bd3e3814556d7e5c59d2e3",
+      "metric": "generated_play.result_pooled_distance",
+      "sample_size": 26336,
+      "value": 0.05464412885806906
+    },
+    {
+      "dispersion": {
+        "bound": 0.003082315996886316,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-result v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.003011321069187536
+      },
+      "fingerprint": "43eda27a284cd73544b3ba025ecfcfdbb9e6c27661e34a1dd05b5d111f75ad56",
+      "metric": "generated_play.result_rating_variation",
+      "sample_size": 26336,
+      "value": 0.015342881944444449
+    },
+    {
+      "dispersion": {
+        "bound": 0.003878020006461138,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-termination v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.003788697642936031
+      },
+      "fingerprint": "bec40d82bedda763f92dbd954e72b58ec3b168638977778168fe4e08dbcc4a70",
+      "metric": "generated_play.termination_conditional_distance",
+      "sample_size": 23657,
+      "value": 0.13821256414405206
+    },
+    {
+      "dispersion": {
+        "bound": 0.00396110323212514,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-termination v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.0038698672141905064
+      },
+      "fingerprint": "688a1b780b1751ec6e8ba17e2d583c1866bdeff278fa43617be3821f6aa591f7",
+      "metric": "generated_play.termination_pooled_distance",
+      "sample_size": 23657,
+      "value": 0.13637664874197183
+    },
+    {
+      "dispersion": {
+        "bound": 0.0038455288320474413,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-termination v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.0037569548371453694
+      },
+      "fingerprint": "0603fa86f44e5c16c568c49d11c2db3bf8e76be9aabd02e29b77399ba22e48d7",
+      "metric": "generated_play.termination_rating_variation",
+      "sample_size": 23657,
+      "value": 0.08705512152777779
+    },
+    {
+      "dispersion": {
+        "bound": 0.004766717131389737,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-waypoint v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.00465692542332171
+      },
+      "fingerprint": "d83c9cc6e1e22ecc6ee780ec44cde37ed18f3e457e08309d4f20cd429d108506",
+      "metric": "generated_play.waypoint_conditional_distance",
+      "sample_size": 26336,
+      "value": 0.015214176057598635
+    },
+    {
+      "dispersion": {
+        "bound": 0.0068652313574463246,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-waypoint v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.006707104609783315
+      },
+      "fingerprint": "04cb1e817b35720261dbad14d468ba00bb5c92c965aed2b9554ced37bdaddbf6",
+      "metric": "generated_play.waypoint_pooled_distance",
+      "sample_size": 26336,
+      "value": 0.012633633270842881
+    },
+    {
+      "dispersion": {
+        "bound": 0.002843674276769528,
+        "estimator": "bootstrap-over-generated-streams",
+        "source": "generated-play-waypoint v1 bootstrap-over-generated-streams",
+        "units": null,
+        "value": 0.0027781759794236116
+      },
+      "fingerprint": "2c7997aa6021f7f3d11ed73ca5b35bdd69c01340245192d79cf4f1a1016823f8",
+      "metric": "generated_play.waypoint_rating_variation",
+      "sample_size": 26336,
+      "value": 0.013888888888888867
+    }
+  ],
+  "recorded_at": "2026-10-21T08:16:52.807335Z",
+  "result_id": "abf9113607e0d502"
+}

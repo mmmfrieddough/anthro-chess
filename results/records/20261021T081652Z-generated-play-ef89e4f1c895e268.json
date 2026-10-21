@@ -1,0 +1,140 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "generated-play-rollout",
+    "version": 1
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "model.run_path=\"arm-495-combined\"",
+      "model.checkpoint=\"step-00069465.pt\""
+    ],
+    "sha256": "e908084f3e0ac627cfaee48a402e5e8db976532b8f9f7775532e007f9bb90aef",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/evaluation/generated-play-rollout.toml"
+  },
+  "data": null,
+  "detail": {
+    "bytes": 64773,
+    "description": "Exact shallow repertoire: standard-start temperature=1",
+    "path": "generated-play/arm-495-combined-step-00069465/20261021T081652Z-standard-start-repertoire-t1_0.json",
+    "sha256": "64f094e6194fcd9f749b621451389cfcaabbf7d90debdad3e956217abc5b3c02"
+  },
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": {
+    "coordinates": {},
+    "cpu_threads": null,
+    "device": "cuda",
+    "device_name": "NVIDIA GeForce RTX 4090",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "platform_key": "Linux-x86_64",
+    "precision": "float32-matmul-high",
+    "torch_version": "2.13.0+cu130",
+    "workload": {
+      "claim_draws": false,
+      "curve_neighbours": 1024,
+      "curve_spec_version": 1,
+      "draw_claim_enabled": true,
+      "generation_version": 1,
+      "maximum_generated_plies": 300,
+      "opening_level": "family",
+      "positions": {
+        "kind": "standard-start"
+      },
+      "reference": {
+        "game_ids_sha256": "070f1fbe5f48814b56c0894f118cad1852f9dce22a1ed05f4dc553f51d5e1b72",
+        "maximum_rating_gap": 200,
+        "view": "rollout-reference-12000"
+      },
+      "resignation_enabled": true,
+      "swap_colors": true,
+      "target_ratings": [
+        1100,
+        1300,
+        1500,
+        1700,
+        1900,
+        2100
+      ],
+      "temperature": 1.0,
+      "time_control": "180+0",
+      "walk_plies": 8,
+      "walk_threshold": 0.001
+    },
+    "workload_sha256": "d68e8b8c560801c46f4aec348f532367f3f748c02b096d5d182d6fdfa3f408a2"
+  },
+  "kind": "generated-play",
+  "measurements": [
+    {
+      "dispersion": null,
+      "fingerprint": "23cf5c8d69d237fdceca440b592ac79d37be8bd77e90d21e1a1579c2df94349a",
+      "metric": "generated_play.exact_repertoire_conditional_distance",
+      "sample_size": null,
+      "value": 0.11696780159516472
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "1e7ba045a252b381c294e8e922a1a9b1446c70be9f6c5afd9c4cc900dc149d66",
+      "metric": "generated_play.exact_repertoire_pooled_distance",
+      "sample_size": null,
+      "value": 0.06103754124249229
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "dab1d76b9ca2ddb1963d4380838dc8f5da5be8ef725540c0f9de4246526082a4",
+      "metric": "generated_play.exact_repertoire_pruned_mass",
+      "sample_size": null,
+      "value": 0.8966810236400529
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "b7e942042a087734b5f9024a65472d5363e5307f7de22e7e1871f0ee60696260",
+      "metric": "generated_play.exact_repertoire_unsettled_mass",
+      "sample_size": null,
+      "value": 0.3679910733279723
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "116beb1683fc6e956b2abfe32d06a3ac050bfc9483197f01337918a3e76e56eb",
+      "metric": "generated_play.exact_repertoire_waypoint_mass",
+      "sample_size": null,
+      "value": 0.3509044522524094
+    }
+  ],
+  "recorded_at": "2026-10-21T08:16:52.807335Z",
+  "result_id": "ef89e4f1c895e268"
+}

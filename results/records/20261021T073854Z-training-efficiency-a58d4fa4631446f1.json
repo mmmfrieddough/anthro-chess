@@ -1,0 +1,155 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "training-efficiency",
+    "version": 1
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "run_name=\"arm-495-combined\"",
+      "model.clock_inputs=true",
+      "train.loader.selection.rating_balance=4.0",
+      "train.streaming.interleaved_row_groups=16"
+    ],
+    "sha256": "ca16df9bcec2fb2cc537c1087654b7a1994147466d659e027cc3aa89cb9217c5",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/training/ablation-vehicle.toml"
+  },
+  "data": null,
+  "detail": {
+    "bytes": 1201,
+    "description": "Overhead breakdown, step-time spread, and synchronization probe.",
+    "path": "training-efficiency/arm-495-combined-step-00069465/20261021T073854Z.json",
+    "sha256": "d3f4b8c3f8a59e7af2ff7280f351aa94de28a9397eca5201c86c24f6c8347f5b"
+  },
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": {
+    "coordinates": {
+      "batch_size": 1024,
+      "batch_unit": "positions",
+      "compilation": "default",
+      "dataset_sha256": "0dd6ce518962264e1fb1b478715ac51b666a86d79d7d3b9e117c28348d90d4e2",
+      "determinism": "relaxed",
+      "effective_batch_size": 16384,
+      "gradient_accumulation_steps": 16,
+      "loader_configuration_sha256": "ac519a0330052febd1e8f62d72edace2c040a0e4ba8aa16dada6f6c6a997d2c2",
+      "matmul_precision": "high",
+      "model_sha256": "b2eba5d60a2c3cafe9cccbdb14eb4a0dc1743c1b509e876454b44d80457c2778",
+      "phase_profiling": false,
+      "world_size": 2
+    },
+    "cpu_threads": null,
+    "device": "cuda",
+    "device_name": "NVIDIA GeForce RTX 4090",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "platform_key": "Linux-x86_64",
+    "precision": "bfloat16-mixed",
+    "torch_version": "2.13.0+cu130",
+    "workload": {
+      "benchmark_version": 1
+    },
+    "workload_sha256": "56df5620692664156e6897dc330096609e58549a9af77c752ab4b3ac311387c6"
+  },
+  "kind": "training-efficiency",
+  "measurements": [
+    {
+      "dispersion": null,
+      "fingerprint": "cdcfa8b2779536f61305500c0f785c6e0a2ead142cb840328c444b556ad76e52",
+      "metric": "training.active_position_fraction",
+      "sample_size": 51465,
+      "value": 0.9995096753501318
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "238d529d3d03dd399b9f0a65bf89989329fb214c7d8ab479dcb0dcbc1e4455f4",
+      "metric": "training.active_positions_per_second",
+      "sample_size": 51465,
+      "value": 98653.96380270127
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "f660274331f2fec6eab3c6ecf655f2487e2e59dd8a9c3f123dbbcdafdd7d5945",
+      "metric": "training.compiled_graphs",
+      "sample_size": null,
+      "value": 1.0
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "7d0ef235d176b0fcf811d6b4e2b9e3b9f90c64bade25e7a09d066938f980c599",
+      "metric": "training.overhead_fraction",
+      "sample_size": null,
+      "value": 0.007349704799452338
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "6153ee3a2dcc1a00e9917fe24277b937c4ef2724fb190bd4a90cd3d56abb77ac",
+      "metric": "training.peak_device_memory_bytes",
+      "sample_size": null,
+      "value": 2623537152.0
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "0d89c78e3187b1a77fc8ceb0f60522a21c06cbc3fe026aec97ca6b21f7b78dc1",
+      "metric": "training.processed_positions",
+      "sample_size": null,
+      "value": 1137561672.0
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "b0ed921b4922bf3f655fc67fb22d19958553da1697cc3e898ee309df70c67e10",
+      "metric": "training.step_seconds",
+      "sample_size": 51465,
+      "value": 0.1659940045965813
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "fcc4e5d6a42e516abab6de8d5ad715a72717ec4ea41e96a8c44bf525d4c22f63",
+      "metric": "training.step_sync_cost_seconds",
+      "sample_size": 17000,
+      "value": 0.008309322433667582
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "76372839c10a084b362fdcd8c34dd36f52b08f9d05a968f6b4536764189a556b",
+      "metric": "training.training_seconds",
+      "sample_size": null,
+      "value": 11683.662134261918
+    }
+  ],
+  "recorded_at": "2026-10-21T07:38:54.053430Z",
+  "result_id": "a58d4fa4631446f1"
+}

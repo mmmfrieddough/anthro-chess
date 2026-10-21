@@ -1,0 +1,81 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "rating-dependency",
+    "version": 1
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "model.run_path=\"arm-495-combined\"",
+      "model.checkpoint=\"step-00069465.pt\""
+    ],
+    "sha256": "9e464fdcbe9cbcaaac6cd1f20b7f27688b970f18275085d33e6632bf8f115db3",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/evaluation/rating-dependency.toml"
+  },
+  "data": null,
+  "detail": null,
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": {
+    "coordinates": {},
+    "cpu_threads": null,
+    "device": "cuda",
+    "device_name": "NVIDIA GeForce RTX 4090",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "platform_key": "Linux-x86_64",
+    "precision": "float32-matmul-high",
+    "torch_version": "2.13.0+cu130",
+    "workload": {
+      "benchmark": "rating-dependency",
+      "benchmark_version": 1,
+      "configuration_sha256": "63681a1a8e693cd2ba002a5b5129c9bf7959efb10d70c9d7cea6f8bcfe86d887"
+    },
+    "workload_sha256": "5f76153d6a80ec1d5be22c92d5f5e71711ad5063c4aa76d158209457673ba545"
+  },
+  "kind": "benchmark-cost",
+  "measurements": [
+    {
+      "dispersion": null,
+      "fingerprint": "efb55b879a226a5e9d59b2191e782f4fc632f8f7e0c89a15c798f46a1a4a44b8",
+      "metric": "benchmark.wall_clock_seconds",
+      "sample_size": null,
+      "value": 134.8065701680025
+    }
+  ],
+  "recorded_at": "2026-10-21T08:03:36.386913Z",
+  "result_id": "058f3501445e3171"
+}

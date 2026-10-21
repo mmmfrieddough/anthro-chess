@@ -1,0 +1,231 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "novelty-dose-response",
+    "version": 2
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "model.run_path=\"arm-495-combined\"",
+      "model.checkpoint=\"step-00069465.pt\""
+    ],
+    "sha256": "89aeb80060b8f8b2519bb4afb235014fb0e9e9468ea8e53baa7551832bc9eafd",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/evaluation/novelty-dose-response.toml"
+  },
+  "data": {
+    "components": [
+      {
+        "content_sha256": "6eae811b0d795f1ed6b98d790697f7ad7c7d38dc1668eb46cb26ed1c885a0823",
+        "games": 6400,
+        "projection": "move_prediction",
+        "projection_version": 1
+      }
+    ],
+    "game_ids_sha256": "1b2c583bb3009412503cc1276bd02acbbff4bbeb8581cf001b48341203f9cbd0",
+    "pool_id": "lichess-univ-2018-01-2021-06-test",
+    "pool_version": 1,
+    "selected_games": 6400,
+    "view": "novelty-6400"
+  },
+  "detail": {
+    "bytes": 1818495,
+    "description": "Per-arm derivation provenance, phase counts, and material-gain band readings for one novelty dose.",
+    "path": "novelty-dose-response/arm-495-combined-step-00069465/20261021T080454Z-dose-0-1250.json",
+    "sha256": "9706bcd89682b9dabb28871af7c6acfd1fd24f7528b68ecee5971cbd71a426c0"
+  },
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": {
+    "coordinates": {},
+    "cpu_threads": null,
+    "device": "cuda",
+    "device_name": "NVIDIA GeForce RTX 4090",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "platform_key": "Linux-x86_64",
+    "precision": "float32-matmul-high",
+    "torch_version": "2.13.0+cu130",
+    "workload": {
+      "benchmark": "novelty-dose-response",
+      "benchmark_version": 2,
+      "dose": 0.125,
+      "onset_plies": 16,
+      "recipe": "random-legal-opponent",
+      "recipe_version": 1,
+      "seed": "anthro-novelty-v1",
+      "window_moves": 8
+    },
+    "workload_sha256": "ebf6b4bed92eb13245ae659dfa41794e4a214f72d2ac457e3845f194cec83015"
+  },
+  "kind": "novelty-dose-response",
+  "measurements": [
+    {
+      "dispersion": null,
+      "fingerprint": "10e5e533ac2416b236369000eacf778986db049529a8f09e09b173e4f685628f",
+      "metric": "novelty.derived_ply_retention",
+      "sample_size": 6292,
+      "value": 0.78783203125
+    },
+    {
+      "dispersion": {
+        "bound": 4.43404318777227e-05,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 6292 derived game(s) at novelty dose 0.125",
+        "units": 6292,
+        "value": 4.368947716909447e-05
+      },
+      "fingerprint": "617ccf45121e790ca8daa381152dd5accf4382734d4268b0b73ea35737a1eaf2",
+      "metric": "novelty.mask_penalty",
+      "sample_size": 40337,
+      "value": 0.0006731593862738229
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "bde257a3d0f8a989caa8b0dc3f0faa27c742b6e064ee964e4103e3e3bfef0b6a",
+      "metric": "novelty.mask_penalty_delta",
+      "sample_size": 40337,
+      "value": 0.00020137998374316956
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "e4a4aeaa59b83feabde6de1bde1a3a59ce9624508dc54381227ea685747f38f4",
+      "metric": "novelty.material_gain_opportunity_share_minor",
+      "sample_size": 40337,
+      "value": 0.12579021741825122
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "fb7c7e03043abd25a84f21e93c29866f67312859496e29fbbd310312cbd0961d",
+      "metric": "novelty.material_gain_opportunity_share_pawn",
+      "sample_size": 40337,
+      "value": 0.16406772937997371
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "9f47da9b8a33c8fab23c76f3e1704f653cc09c42887b294c137efaf69dc851f1",
+      "metric": "novelty.material_gain_opportunity_share_rook_or_better",
+      "sample_size": 40337,
+      "value": 0.06482881721496393
+    },
+    {
+      "dispersion": {
+        "bound": 0.0051129465517130174,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 6292 derived game(s) at novelty dose 0.125",
+        "units": 2993,
+        "value": 0.005004048710330339
+      },
+      "fingerprint": "b068193541b3f764cc9161185b48241b00706a21403cd8d3289c3cbb595f1525",
+      "metric": "novelty.material_gain_policy_mass_minor",
+      "sample_size": 5074,
+      "value": 0.7563577730730293
+    },
+    {
+      "dispersion": {
+        "bound": 0.004812112215561651,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 6292 derived game(s) at novelty dose 0.125",
+        "units": 3388,
+        "value": 0.004715792539215151
+      },
+      "fingerprint": "e26e806c6593fec27ab0257b4a3cded11ed12aa5dc43be69491f694ad2fe1856",
+      "metric": "novelty.material_gain_policy_mass_pawn",
+      "sample_size": 6618,
+      "value": 0.5401321167260766
+    },
+    {
+      "dispersion": {
+        "bound": 0.007373541992728191,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 6292 derived game(s) at novelty dose 0.125",
+        "units": 1467,
+        "value": 0.007149033500411008
+      },
+      "fingerprint": "3fe5a65f7c036580e3116cc1bd9c00fd28e7f82160f802adc02bfbcc4af22ca1",
+      "metric": "novelty.material_gain_policy_mass_rook_or_better",
+      "sample_size": 2615,
+      "value": 0.6752911092149511
+    },
+    {
+      "dispersion": {
+        "bound": 0.005708278877085607,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 6292 derived game(s) at novelty dose 0.125",
+        "units": 2993,
+        "value": 0.005586701379367252
+      },
+      "fingerprint": "2e2a4fa77970fa3f4e478c12bb1f22447f053fe2790254b3340c9c8134c10b77",
+      "metric": "novelty.material_gain_selected_rate_minor",
+      "sample_size": 5074,
+      "value": 0.8659834450137959
+    },
+    {
+      "dispersion": {
+        "bound": 0.006603694498248596,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 6292 derived game(s) at novelty dose 0.125",
+        "units": 3388,
+        "value": 0.0064715143477721525
+      },
+      "fingerprint": "893445c5d828149c8fbc22e77dbffc77546af0a3085848833840db497d585b23",
+      "metric": "novelty.material_gain_selected_rate_pawn",
+      "sample_size": 6618,
+      "value": 0.6740707162284678
+    },
+    {
+      "dispersion": {
+        "bound": 0.009294980139711657,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 6292 derived game(s) at novelty dose 0.125",
+        "units": 1467,
+        "value": 0.009011967989059658
+      },
+      "fingerprint": "2fc6bb67008175febfe7c4e83db0f65f1911f42db183dc1fe927b6ecc155dd16",
+      "metric": "novelty.material_gain_selected_rate_rook_or_better",
+      "sample_size": 2615,
+      "value": 0.8378585086042065
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "2423bcdd816072d1dbcc16f38634a1c24de2141e23494681fcfb3587b7aa8f38",
+      "metric": "novelty.realized_dose",
+      "sample_size": 6292,
+      "value": 0.3125145166535049
+    }
+  ],
+  "recorded_at": "2026-10-21T08:04:54.164596Z",
+  "result_id": "45464298bb7f2725"
+}

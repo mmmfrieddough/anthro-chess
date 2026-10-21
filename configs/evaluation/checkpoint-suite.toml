@@ -78,3 +78,15 @@ config = "configs/evaluation/game-termination.toml"
 # set of seats cannot be read against this one at all, since the fit places
 # every seat on one internal scale.
 config = "configs/evaluation/rating-ladder.toml"
+
+[benchmarks.ladder-bullet]
+# The same ladder at bullet. A clock-reading model's dial is not the same at
+# every speed, so a dial read at blitz says nothing about it here. 1+0 is 72%
+# of the pool's games rated in the bullet pool.
+benchmark = "ladder"
+config = "configs/evaluation/rating-ladder.toml"
+overrides = [
+  'time_control="60+0"',
+  'openings.view.speed="bullet"',
+  'openings.view.rating_namespace="lichess_bullet"',
+]

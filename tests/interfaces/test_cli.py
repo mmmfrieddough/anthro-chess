@@ -2258,6 +2258,7 @@ def test_eval_suite_plans_the_shipped_selection_without_running_it(
         "rollout",
         "termination",
         "ladder",
+        "ladder-bullet",
     }
     # The decomposition is the rollout's own reading over the games it just
     # played, so nothing waits on a payload to reach it.
