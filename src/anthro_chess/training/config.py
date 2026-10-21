@@ -94,8 +94,7 @@ class TrainingConfig(ConfigModel):
     #: capping every step.
     gradient_clip_norm: float = Field(default=10.0, gt=0.0)
     log_every_steps: int = Field(default=1, ge=1)
-    #: How often a run saves, which bounds what stopping it loses. Each save
-    #: replaces the one before it unless the retention settings below keep it.
+    #: How often a run saves, which bounds what stopping it loses.
     checkpoint_every_steps: int = Field(default=100, ge=1)
     #: Which checkpoints outlive the save after them: every multiple of this,
     #: every step in ``keep_steps``, and the final step, each saved whether or
