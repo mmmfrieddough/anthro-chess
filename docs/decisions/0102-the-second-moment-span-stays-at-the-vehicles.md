@@ -20,8 +20,8 @@ helps at the vehicle, which is the only comparison a candidate is accepted on.
 
 Two arms of the ablation vehicle at seed 17, each changing
 `second_moment_decay` alone, at the vehicle's rate of 3e-3, read on the
-checkpoint suite against the six `#488` replicates. 0.99 and 0.97 are the two
-values that beat 0.999 at width 32 and 800 positions per parameter.
+checkpoint suite against the six `#488` replicates. 0.97 was the best span at
+width 32 and 800 positions per parameter, and 0.99 the best at 400.
 
 | metric | replicates | 0.99 (100 steps) | 0.97 (33 steps) |
 | --- | ---: | ---: | ---: |
@@ -35,29 +35,28 @@ Parenthesized figures are replicate deviations. The claim written before either
 arm ran was that a shorter span lowers held-out loss by more than one replicate
 deviation. Neither arm does, and the shorter span moves it least.
 
-**The one consistent movement is against the change.** Ultrabullet loss rises
-with a shorter span, monotonically across the two arms, and unclocked games
-follow it at +1.6 and +2.5. The puzzle solve rate moves in opposite directions
-in the two arms, which a span effect cannot do.
+**Off the predicted metrics the arms agree in two places, pulling opposite
+ways.** Ultrabullet loss rises with a shorter span, and unclocked games follow it
+at +1.6 and +2.5. The novelty mask penalty falls in both arms, by up to 3.1 and
+4.0 deviations. Neither was predicted, and neither bears on held-out loss. The
+puzzle solve rate moves in opposite directions in the two arms, so it gives no
+direction.
 
 **Training health matches the vehicle's** apart from the final update-to-weight
-ratio, which is lower in both arms; gradient norms and clip rates read the same.
-The departure is the optimizer doing what a shorter average does, not
+ratio, which is lower in both arms because their weights end 8 to 10% larger in
+norm. Gradient norms and clip rates read the same, so nothing here is
 instability.
 
 ## Decision
 
-**`second_moment_decay` stays at 0.999 and `SECOND_MOMENT_POSITIONS` stays the
-vehicle's span.** Nothing here is a candidate for the combined arm.
+**`SECOND_MOMENT_POSITIONS` stays the vehicle's span.** Nothing here is a
+candidate for the combined arm.
 
 ## What This Does Not Claim
 
 **That 0.999 is optimal.** The arms ran at the rate fitted for 0.999, and the
 span is coupled to the rate, so a shorter span is discarded at that rate only.
 A longer span than the vehicle's was not tried at this width.
-
-**That the width-32 reading was wrong.** It stands at its own scale; it does not
-reach the vehicle's.
 
 ## References
 
