@@ -35,8 +35,7 @@ record closes: the cards share the declared batch rather than adding to it.
 serves.
 
 `0103-the-time-head-is-read-on-the-combined-arm.md` reads the last candidates
-before the target run on the combined arm rather than on the vehicle, where the
-floor buys little and their effect inside the recipe is the one that matters.
+before the target run on the combined arm rather than on the vehicle.
 
 The architecture the vehicle freezes is designated by
 `0066-the-trunk-sees-the-rating-and-the-board-keeps-its-shape.md`, which landed

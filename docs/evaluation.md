@@ -3079,7 +3079,8 @@ candidate being evaluated for adoption, and it differs in one respect that
 matters here: it is frozen, so adopting a candidate does not advance it, and the
 seed dispersion characterized against its digest stays current however many
 candidates are accepted. That is the whole reason it exists, and
-`docs/scaling.md` owns the program it serves.
+`docs/scaling.md` owns the program it serves, including the two candidates read
+against the combined arm instead, which carries no seed floor.
 
 A vehicle comparison is qualified by both floors — the combined evaluation floor
 every reading carries, and the vehicle's seed floor. The seed floor describes

@@ -27,28 +27,16 @@ its effect inside that recipe is the one that matters.
 
 ## Decision
 
-**The time head is read as an arm of `#495`'s combined configuration, against
-`#495`'s treatment arm, which differs from it by the head alone.** That arm is
-also the combined arm with the head in it, so `#595` is not run.
+**The time head is read as an arm of the set `#495` adopts, against the `#495`
+arm that carries exactly that set.** That is `#495`'s treatment arm, or, where
+its leave-one-out pass drops a member, the arm without it. The head's arm is
+then also the combined arm with the head in it, so `#595` is not run.
 
 **The stability package is read the same way once.** Beside its range test,
-`#499` runs one arm of the combined configuration with the package, against
-`#495`'s treatment arm, so a package that changes quality shows at vehicle scale
-rather than first at `#491`.
-
-**A new candidate is still an arm of the vehicle.** A change that has not yet
-been read on its own, such as an input `#555` turns up, is read against the
-vehicle and its floor, and a new set is read as one further arm as before.
-
-## What This Gives Up
-
-**The head's main effect on its own.** Read on the combined base, the head's
-delta includes whatever it does with the set. Nothing downstream asks for the
-main effect alone.
-
-**A seed floor on the head's reading.** Neither plan had one where it mattered.
+`#499` runs one arm of that set with the package, against the same control, so a
+package that changes quality shows at vehicle scale rather than first at `#491`.
 
 ## References
 
 - `0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-on.md`
-- `#593`, `#595`, `#495`, `#499`, `#491`, `#555`
+- `#593`, `#595`, `#495`, `#499`, `#491`

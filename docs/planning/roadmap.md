@@ -323,10 +323,9 @@ handling at the UCI boundary. See `docs/architecture.md` and
 `docs/decisions/0003-action-conditioned-timing.md`.
 
 **The half that changes the weights comes before the target run.** The time head
-is read as an arm of stage 5's combined configuration, against that combined arm,
-so the one arm says both what the head does and whether the set still composes
-with it; `docs/decisions/0103-the-time-head-is-read-on-the-combined-arm.md` owns
-why. It is accepted on offline timing metrics only where move prediction holds,
+is read as an arm of stage 5's combined configuration, against that combined arm;
+`docs/decisions/0103-the-time-head-is-read-on-the-combined-arm.md` owns why. It
+is accepted on offline timing metrics only where move prediction holds,
 since no auxiliary head has yet improved it. Generated play then runs simulated
 clocks, because the run reads its own length from the rating dial and generated
 play, and those should be read under time pressure rather than with the clock
