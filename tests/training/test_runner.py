@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 import tomllib
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from io import StringIO
 from pathlib import Path
 from typing import Any, cast
@@ -51,6 +51,7 @@ from anthro_chess.training.devices import (
 )
 from anthro_chess.training.distributed import SINGLE_PROCESS, DataParallel
 from anthro_chess.training.losses import masked_action_cross_entropy
+from anthro_chess.training.retention import protected_checkpoints
 from anthro_chess.training.runner import (
     _EXECUTION_COMPATIBILITY_KEYS,
     _EXECUTION_PROVENANCE_KEYS,
@@ -1384,7 +1385,7 @@ def _rank_command(
     config: Path,
     output_directory: Path,
     ranks: int,
-    recording: Sequence[str] = ("--no-record",),
+    *recording: str,
 ) -> list[str]:
     """Train through the command line under `torchrun`, as a real launch does."""
 
@@ -1399,7 +1400,7 @@ def _rank_command(
         "train",
         "--config",
         str(config),
-        *recording,
+        *(recording or ("--no-record",)),
         "--output-directory",
         str(output_directory),
     ]
@@ -1413,17 +1414,17 @@ def _launch_ranks(
     results: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     recording = (
-        ["--no-record"]
+        ()
         if results is None
-        else [
+        else (
             "--store",
             str(results / "store"),
             "--detail-root",
             str(results / "detail"),
-        ]
+        )
     )
     launched = subprocess.run(
-        _rank_command(config, output_directory, ranks, recording),
+        _rank_command(config, output_directory, ranks, *recording),
         capture_output=True,
         text=True,
         check=False,
@@ -2877,6 +2878,8 @@ def test_a_stop_signal_saves_the_step_in_flight_and_resuming_continues_the_run(
     def signalled_during_the_third_step(*arguments: Any) -> torch.Tensor:
         losses.append(masked_action_cross_entropy(*arguments))
         if len(losses) == 3:
+            # Twice, as a signal to the process group arrives under `uv run`.
+            os.kill(os.getpid(), signal.SIGTERM)
             os.kill(os.getpid(), signal.SIGTERM)
         return losses[-1]
 
@@ -2987,3 +2990,102 @@ def test_a_stop_signal_to_one_rank_stops_every_rank_at_one_saved_step(
     assert final["counters"] == expected["counters"]
     for name, value in expected["model_state"].items():
         torch.testing.assert_close(final["model_state"][name], value)
+
+
+def test_a_stop_signal_during_the_final_step_lets_the_run_finish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    losses: list[torch.Tensor] = []
+
+    def signalled_during_the_last_step(*arguments: Any) -> torch.Tensor:
+        losses.append(masked_action_cross_entropy(*arguments))
+        if len(losses) == 3:
+            os.kill(os.getpid(), signal.SIGTERM)
+        return losses[-1]
+
+    monkeypatch.setattr(
+        "anthro_chess.training.runner.masked_action_cross_entropy",
+        signalled_during_the_last_step,
+    )
+
+    result = run_training(
+        load_config(
+            TrainingConfig,
+            path=_write_training_config(
+                tmp_path / "config",
+                normalized=prepared.normalized_path,
+                manifest=prepared.manifest_path,
+                run_name="run",
+                validation=False,
+                steps=3,
+            ),
+        ),
+        output_directory=tmp_path / "run",
+    )
+
+    record = json.loads(result.run_path.read_text(encoding="utf-8"))
+    assert record["complete"] is True
+
+
+def test_a_branch_paused_and_resumed_still_names_its_trunk_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    runs = tmp_path / "runs"
+
+    def config(name: str, steps: int, resume_from: str | Path | None) -> Any:
+        return load_config(
+            TrainingConfig,
+            path=_write_training_config(
+                tmp_path / f"{name}-{steps}-config",
+                normalized=prepared.normalized_path,
+                manifest=prepared.manifest_path,
+                run_name=name,
+                validation=False,
+                steps=steps,
+                checkpoint_every_steps=1,
+                extra="keep_every_steps = 100\n",
+                resume_from=resume_from,
+            ),
+        )
+
+    trunk = run_training(config("trunk", 3, None), output_directory=runs / "trunk")
+    losses: list[torch.Tensor] = []
+
+    def signalled_during_the_branch_s_first_step(*arguments: Any) -> torch.Tensor:
+        losses.append(masked_action_cross_entropy(*arguments))
+        if len(losses) == 1:
+            os.kill(os.getpid(), signal.SIGTERM)
+        return losses[-1]
+
+    monkeypatch.setattr(
+        "anthro_chess.training.runner.masked_action_cross_entropy",
+        signalled_during_the_branch_s_first_step,
+    )
+    with pytest.raises(TrainingStopped):
+        run_training(
+            config("branch", 6, trunk.checkpoint_path),
+            output_directory=runs / "branch",
+        )
+    monkeypatch.undo()
+    run_training(config("branch", 6, "latest"), output_directory=runs / "branch")
+
+    record = json.loads((runs / "branch/run.json").read_text(encoding="utf-8"))
+    assert record["optimization"]["resumed_from"] == str(
+        (runs / "branch/checkpoints/step-00000004.pt").resolve()
+    )
+    assert record["optimization"]["branched_from"] == str(
+        trunk.checkpoint_path.resolve()
+    )
+    assert trunk.checkpoint_path.resolve() in protected_checkpoints(runs)

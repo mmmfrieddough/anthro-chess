@@ -431,10 +431,12 @@ another run's record names as its `resumed_from`, or that the default model
 selection pins, is never deleted.
 
 SIGTERM or SIGINT makes stopping a pause rather than a loss: the run finishes
-the optimizer step in flight, saves through the same atomic path, and exits on
-its own code, and resuming from the latest checkpoint continues it. Ranks agree
-on the step to stop at, so one signalled rank stops them all. A second signal
-stops the process without saving.
+the optimizer step in flight, saves through the same atomic path, and each
+process exits on its own code, and resuming from the latest checkpoint
+continues it. Ranks agree on the step to stop at, so one signalled rank stops
+them all. A repeated signal changes nothing, since one sent to a process group
+reaches the run twice through `uv run`; a run that has to die at once takes
+SIGKILL. A stop during the final step lets the run finish instead.
 
 `anthro checkpoints prune` applies the same policy to runs already on disk. It
 only reports until told to delete, and never touches a checkpoint at or above a
