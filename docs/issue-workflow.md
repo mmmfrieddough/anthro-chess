@@ -336,9 +336,11 @@ being evaluated for adoption is read as an arm against the ablation vehicle — 
 frozen configuration
 `docs/decisions/0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-on.md`
 designates — because it is the only base in this project carrying a characterized
-seed dispersion. A change to the canonical line itself is read against the prior
-checkpoint whose training identity matches, which is what `0063` settles. Neither
-substitutes for the other, and the pull request says which it took.
+seed dispersion. The time head and the stability package are read against the
+combined arm instead, as `docs/scaling.md` (The Ablation Vehicle) says. A change
+to the canonical line itself is read against the prior checkpoint whose training
+identity matches, which is what `0063` settles. None substitutes for another, and
+the pull request says which it took.
 
 An arm is the vehicle's own configuration with the one change applied and its
 own run name, so what separates the two arms is visible in the command:

@@ -34,6 +34,9 @@ record closes: the cards share the declared batch rather than adding to it.
 `docs/scaling.md` states the resulting rule and owns the program the vehicle
 serves.
 
+`0103-the-time-head-is-read-on-the-combined-arm.md` reads the last candidates
+before the target run on the combined arm rather than on the vehicle.
+
 The architecture the vehicle freezes is designated by
 `0066-the-trunk-sees-the-rating-and-the-board-keeps-its-shape.md`, which landed
 first for the reason this record names below: a fundamental rethink after the

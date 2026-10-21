@@ -208,7 +208,7 @@ runs together as one further arm before any of it reaches the canonical line.
 follows the move-time head in stage 6, so one run at the target size carries both
 heads. Run here, it would be followed by a second run of the same size once the
 model writes time, and the budget buys more than two weeks on both cards. The
-combined arm is read again there with the time head in it.
+time head is then read on the combined arm.
 
 Distribution replicates the model rather than sharding it, so it buys throughput
 and not capacity, and the per-card memory ceiling still bounds how large a model
@@ -323,12 +323,13 @@ handling at the UCI boundary. See `docs/architecture.md` and
 `docs/decisions/0003-action-conditioned-timing.md`.
 
 **The half that changes the weights comes before the target run.** The time head
-is a candidate like any in stage 5: an arm against the vehicle, accepted on
-offline timing metrics only where move prediction holds, since no auxiliary head
-has yet improved it. Generated play then runs simulated clocks, because the run
-reads its own length from the rating dial and generated play, and those should
-be read under time pressure rather than with the clock absent. The accepted set
-is read again as one arm with the time head in it.
+is read as an arm of stage 5's combined configuration, against that combined arm;
+`docs/decisions/0103-the-time-head-is-read-on-the-combined-arm.md` owns why. It
+is accepted on offline timing metrics only where move prediction holds,
+since no auxiliary head has yet improved it. Generated play then runs simulated
+clocks, because the run reads its own length from the rating dial and generated
+play, and those should be read under time pressure rather than with the clock
+absent.
 
 **A second loss reopens the target's rate.** The rate at the target width was
 bracketed on move prediction alone, so it is re-checked with the timing loss on

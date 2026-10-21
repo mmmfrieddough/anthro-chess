@@ -215,6 +215,11 @@ and its seed dispersion is characterized against that digest.
 `docs/decisions/0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-on.md`
 owns why it exists and what it gives up.
 
+**The one exception is the time head and the stability package.** Once the
+accepted set has run as one arm, each is read as an arm of that set against the
+combined arm that carries it, so the reading carries no seed floor.
+`docs/decisions/0103-the-time-head-is-read-on-the-combined-arm.md` owns why.
+
 Its size is derived from the target rather than chosen: far enough below the
 target that an arm is cheap enough to spend on a question that may return
 nothing, close enough that its readings sit in the regime the target occupies.
@@ -376,7 +381,7 @@ a reading or a recorded decision rather than a judgement that enough was done.
    `docs/decisions/0090-the-size-is-not-fitted-here-and-the-rate-is-measured-at-the-target.md`
    records why.
 7. **Candidate changes, one arm each against the vehicle**, then the accepted set
-   as one further arm.
+   as one further arm, then the time head and the stability package on that arm.
 8. **Confirmation**, at the target size but a fraction of its budget, which holds
    the size term fixed and removes the hardest extrapolation.
 9. **The run.**
