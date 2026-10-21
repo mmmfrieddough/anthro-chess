@@ -33,6 +33,10 @@ the dial to do anything.
 width range to 512 with a bracket there, which is the extension the Consequences
 below expected a ladder to make.
 
+`0102-the-second-moment-span-stays-at-the-vehicles.md` settles the
+second-moment span this record left open: two shorter spans read level at the
+vehicle.
+
 ## Context
 
 `docs/scaling.md` requires a scale-dependent setting to be recorded as the rule
