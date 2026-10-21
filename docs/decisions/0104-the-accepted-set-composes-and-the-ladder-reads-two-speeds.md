@@ -77,37 +77,42 @@ minus the arm without it. Dropping the span is `arm-497-clock-balance4`, which
 `#497` already ran; `arm-495-loo-no-balance` and `arm-495-loo-no-clock` are the
 other two.
 
-| in the stack | held-out | under 1200 | 2000 and up | 1600 to 1999 | blitz dial | bullet dial |
-| --- | ---: | ---: | ---: | ---: | --- | --- |
-| clock | -0.0259 | -0.0234 | -0.0264 | -0.0264 | +0.060 / +0.076 / +0.080 | +0.187 / +0.141 / +0.125 |
-| balance | +0.0005 | -0.0032 | -0.0048 | +0.0027 | -0.004 / +0.006 / +0.000 | +0.011 / +0.026 / -0.001 |
-| span | +0.0008 | +0.0006 | +0.0013 | +0.0009 | +0.001 / +0.002 / +0.016 | +0.009 / -0.026 / -0.003 |
+| in the stack | held-out | under 1200 | 1200 to 1599 | 1600 to 1999 | 2000 and up | blitz dial | bullet dial |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| clock | -0.0259 | -0.0234 | -0.0257 | -0.0264 | -0.0264 | +0.060 / +0.076 / +0.080 | +0.187 / +0.141 / +0.125 |
+| balance | +0.0005 | -0.0032 | +0.0016 | +0.0027 | -0.0048 | -0.004 / +0.006 / +0.000 | +0.011 / +0.026 / -0.001 |
+| span | +0.0008 | +0.0006 | +0.0004 | +0.0009 | +0.0013 | +0.001 / +0.002 / +0.016 | +0.009 / -0.026 / -0.003 |
 
 The member responsible for the blitz shortfall is the balance: beside the
 clock, its slope gain at blitz is gone. The clock and the balance both widen
 the dial, and at blitz the clock already does what the balance did. What the
-balance was adopted for survives in full: the rating tails gain about what
-they gained alone, and the middle bands pay what they paid alone.
+balance was adopted for survives in part: the rating tails keep about three quarters of
+the gain they had alone. The middle bands pay more than they did alone, +0.0016
+and +0.0027 against +0.0005 and +0.0010, so overall held-out loss moves from a
+gain of 0.0009 alone to a cost of 0.0005 in the stack.
 
-**The span shows nothing in the stack on one draw, and this reading cannot show
-what it was adopted for.** `0093` adopted it because two draws agreed under it
-where a draw change alone moved held-out loss by 0.0043; it claimed nothing
-about the size of a single draw's improvement. Every arm here is draw 1. The
-arm without it trains at a span of one, so its own reading carries that draw
-noise, which is several times anything in the span's row.
+**The span reads slightly worse in the stack on one draw, and this reading
+cannot show what it was adopted for.** `0093` adopted it because two draws
+agreed under it where a draw change alone moved held-out loss by 0.0043; it
+claimed nothing about the size of a single draw's improvement. Every arm here
+is draw 1. The arm without it trains at a span of one, so its held-out reading
+carries that draw noise, several times the span's held-out row. How far a draw
+change moves the dial was never measured, so the span's bullet row at T=0.7,
+about five replicate deviations, has no such account.
 
 ## Why Nothing Is Dropped
 
 A member is dropped where the stack shows it contributes nothing. The clock
-carries almost all of the set's effect. The balance contributes its tail loss
-gain, the reason `0092` adopted it, and at bullet adds to the dial. The span's
-row is inside the draw noise of the arm it is read against, and its reason is a
-property of two draws that a single-draw arm does not test; it costs no
-throughput and nothing measured gets worse.
+carries almost all of the set's effect. The balance still contributes most of
+its tail loss gain, the reason `0092` adopted it, and at bullet adds to the
+dial; it costs the middle bands more than it did alone, which is the trade
+`0092` accepted, now larger. The span's held-out row is inside the draw noise
+of the arm it is read against, and its reason is a property of two draws that a
+single-draw arm does not test. It costs no throughput.
 
-The set does not underperform its best member: held-out loss is better than
-the clock alone's, the blitz dial is within a replicate deviation of it, and
-the bullet dial is wider.
+The set does not underperform its best member beyond noise: held-out loss is
+better than the clock alone's, the blitz dial is 1.1 replicate deviations below
+it at T=0 and level above, and the bullet dial is wider.
 
 ## What This Does Not Claim
 
@@ -120,17 +125,13 @@ floor at all three temperatures.
 **That the bullet super-additivity is real.** It is one arm against a sum of
 four, and it clears the threshold at T=0 only.
 
-**Which speed the dial should be tuned on.** The two read differently, and a
-model's spacing at one says little about the other; nothing here says which a
-player meets more.
+**Which speed the dial should be tuned on.** Nothing here says which a player
+meets more.
 
 ## Consequences
 
-The arm `#593` and `#499` read against is `arm-495-combined`. The target run
-carries the three settings on top of whatever its own configuration decides.
-
-A comparison that reads the dial now reads it at two speeds, and a
-clock-reading arm can move them by different amounts.
+The target run carries the three settings on top of whatever its own
+configuration decides.
 
 ## References
 

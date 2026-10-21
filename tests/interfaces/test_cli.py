@@ -2299,6 +2299,43 @@ def test_eval_suite_threads_one_checkpoint_through_every_benchmark(
         assert 'model.checkpoint="step-00008000.pt"' in step["overrides"]
 
 
+def test_a_sweep_step_prints_with_the_benchmark_it_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from anthro_chess.evaluation.benchmarks import benchmark_registry
+    from anthro_chess.evaluation.suite import (
+        PlannedBenchmark,
+        StepOutcome,
+        StepStatus,
+        SuitePlan,
+    )
+
+    monkeypatch.setattr(cli, "_STEP_RENDERERS", {"ladder": lambda _: "fitted\n"})
+    plan = SuitePlan(
+        suite="checkpoint",
+        steps=(
+            PlannedBenchmark(
+                name="ladder-bullet", benchmark=benchmark_registry()["ladder"]
+            ),
+        ),
+        checkpoint_label=None,
+        sha256="0" * 64,
+    )
+
+    cli._report_step(
+        plan,
+        StepOutcome(
+            name="ladder-bullet",
+            status=StepStatus.COMPLETED,
+            seconds=1.0,
+            result=object(),
+        ),
+    )
+
+    assert "fitted" in capsys.readouterr().out
+
+
 def test_eval_suite_reports_a_configuration_error_without_a_traceback(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

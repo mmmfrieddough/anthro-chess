@@ -365,7 +365,7 @@ def test_one_benchmark_runs_as_two_steps_under_their_own_overrides(
                 "beta-small": {
                     "benchmark": "beta",
                     "config": selection,
-                    "overrides": ["games_per_position=1"],
+                    "variant": ["games_per_position=1"],
                 },
             }
         ),
@@ -383,6 +383,35 @@ def test_one_benchmark_runs_as_two_steps_under_their_own_overrides(
     run = run_suite(plan, sweep_root=tmp_path / "sweep", store=cast("Any", FakeStore()))
     assert recorder.calls == ["beta", "beta"]
     assert [outcome.status for outcome in run.outcomes] == [StepStatus.COMPLETED] * 2
+
+
+def test_reading_a_variant_smaller_keeps_what_makes_it_that_variant(
+    tmp_path: Path,
+) -> None:
+    """The documented way to shrink a step replaces its overrides wholesale."""
+
+    plan = resolve_suite(
+        _suite(
+            benchmarks={
+                "beta-bare": {
+                    "benchmark": "beta",
+                    "config": str(_selection(tmp_path)),
+                    "variant": ["pool='bare'"],
+                    "overrides": ["games_per_position=1"],
+                }
+            }
+        ),
+        registry=_registry(Recorder()),
+    )
+
+    resolved = plan.steps[0].resolved
+    assert resolved is not None
+    assert resolved.value.pool == Path("bare")
+    assert resolved.value.games_per_position == 1
+    assert plan.steps[0].describe()["overrides"][:2] == [
+        "pool='bare'",
+        "games_per_position=1",
+    ]
 
 
 def test_a_step_naming_an_unknown_benchmark_is_refused(tmp_path: Path) -> None:

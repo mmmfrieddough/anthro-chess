@@ -110,6 +110,9 @@ class SuiteBenchmarkConfig(ConfigModel):
     #: some readings and leave the rest unrecorded, which is what a shakedown
     #: over most of the suite plus one kept baseline looks like.
     record: StrictBool = True
+    #: Overrides that make the step a different reading of its benchmark,
+    #: applied before ``overrides`` so that reading the step smaller keeps them.
+    variant: tuple[str, ...] = ()
     #: Dotted TOML overrides applied to the selection.
     overrides: tuple[str, ...] = ()
 
@@ -324,6 +327,7 @@ def resolve_suite(
                 record=record,
                 source=entry.config,
                 overrides=(
+                    *entry.variant,
                     *entry.overrides,
                     *_checkpoint_overrides(config),
                 ),
@@ -651,7 +655,7 @@ def _resolve_benchmark(
     """Load one benchmark's own selection and point it at this checkpoint."""
 
     if benchmark.schema is None:
-        if entry.config is not None or entry.overrides:
+        if entry.config is not None or entry.variant or entry.overrides:
             raise SuiteError(
                 f"the {name} step reads another step's output, so it takes no "
                 "configuration file and no overrides of its own"
@@ -664,7 +668,7 @@ def _resolve_benchmark(
         resolved = resolve_benchmark(
             benchmark,
             path=entry.config,
-            overrides=entry.overrides,
+            overrides=(*entry.variant, *entry.overrides),
         )
     except ConfigError as error:
         raise SuiteError(f"the {name} step: {error}") from error

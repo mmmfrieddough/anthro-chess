@@ -85,7 +85,7 @@ config = "configs/evaluation/rating-ladder.toml"
 # of the pool's games rated in the bullet pool.
 benchmark = "ladder"
 config = "configs/evaluation/rating-ladder.toml"
-overrides = [
+variant = [
   'time_control="60+0"',
   'openings.view.speed="bullet"',
   'openings.view.rating_namespace="lichess_bullet"',

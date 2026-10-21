@@ -259,9 +259,9 @@ ordering is sliced at both. A cheaper reading is `--set` on the invocation that
 wants it, against the benchmark's own schema directly or through
 `benchmarks.<step>.overrides` on a sweep.
 
-**A step is named for its benchmark unless it says otherwise.** A step that
-names a `benchmark` runs it under its own overrides, which is how one benchmark
-is read twice in one sweep without a second copy of its selection.
+**One benchmark can run as several steps.** A step can name the benchmark it
+runs and the overrides that make it a different reading of it, without a second
+copy of its selection, and reading such a step smaller keeps them.
 
 The suite adds no measurement of its own and registers no metric. Decision
 decomposition is the one step it cannot commit, because that family has no
@@ -1837,11 +1837,9 @@ new series. A model that reads no clock plays exactly what it played untimed.
 `docs/decisions/0099-the-rating-benchmarks-declare-the-control-of-their-games.md`
 says which control and why.
 
-**The sweep reads the ladder at blitz and at bullet**, each with its own
-openings, pool and control, as separate series. A clock-reading model's dial
-differs between them, so neither stands in for the other.
+**The sweep reads the ladder at blitz and at bullet**, as separate series.
 `docs/decisions/0104-the-accepted-set-composes-and-the-ladder-reads-two-speeds.md`
-holds the reading that showed it.
+says why.
 
 **What naming them does not settle is the scale the fitted ratings sit on**, and
 the reading says so beside them. The openings decide what the seats play; what a

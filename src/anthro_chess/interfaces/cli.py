@@ -1886,7 +1886,9 @@ def _run_eval_suite(arguments: argparse.Namespace) -> int:
             store=store,
             detail=detail,
             resume=arguments.resume,
-            observer=None if arguments.format == "json" else _report_step,
+            observer=None
+            if arguments.format == "json"
+            else partial(_report_step, plan),
         )
     except (ConfigError, ResultsStoreError, SuiteError) as error:
         print(f"anthro eval suite: {error}", file=sys.stderr)
@@ -1916,7 +1918,7 @@ def _sweep_root(explicit: Path | None) -> Path:
     )
 
 
-def _report_step(outcome: StepOutcome) -> None:
+def _report_step(plan: SuitePlan, outcome: StepOutcome) -> None:
     """Print one finished benchmark's own reading, as its command would.
 
     Printed as the sweep goes rather than collected for the end: a sweep runs
@@ -1931,7 +1933,8 @@ def _report_step(outcome: StepOutcome) -> None:
         print(f"  {outcome.note}")
         print()
         return
-    renderer = _STEP_RENDERERS.get(outcome.name)
+    benchmarks = {step.name: step.benchmark.name for step in plan.steps}
+    renderer = _STEP_RENDERERS.get(benchmarks.get(outcome.name, outcome.name))
     if renderer is None or outcome.result is None:
         print(f"  {outcome.note or 'no reading to print'}")
     else:
