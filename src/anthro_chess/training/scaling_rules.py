@@ -208,7 +208,7 @@ WEIGHT_DECAY = 0.0
 #:
 #: This is the vehicle's own span, held because no other one survived being
 #: checked. At width 32 the optimum moved from 33 to 100 steps when the horizon
-#: halved, and at the vehicle spans of 33 and 100 steps read level with this one.
+#: halved, and at the vehicle, spans of 33 and 100 steps read level with this one.
 #: ``docs/decisions/0102-the-second-moment-span-stays-at-the-vehicles.md``
 #: carries both readings.
 SECOND_MOMENT_POSITIONS = 1.6384e7
