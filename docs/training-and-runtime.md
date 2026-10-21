@@ -420,6 +420,26 @@ as every fixed number of optimizer steps or every fixed number of minutes. The
 latest checkpoint should be enough to resume normal training without waiting
 for epoch-sized units of work.
 
+A run keeps two kinds of checkpoint in one directory. **Rolling** checkpoints
+are written often so that an interruption costs little, and each one is deleted
+once the next has landed, `latest.json` names it, and the run record points at
+it. **Permanent** checkpoints are kept for later reading: every multiple of a
+sparse cadence, any steps the run declares (a trunk branched where that cadence
+does not land), and the final step. `TrainingConfig` owns the settings, and a
+run that declares no permanent cadence keeps everything it writes. A checkpoint
+another run's record names as its `resumed_from`, or that the default model
+selection pins, is never deleted.
+
+SIGTERM or SIGINT makes stopping a pause rather than a loss: the run finishes
+the optimizer step in flight, saves through the same atomic path, and exits on
+its own code, and resuming from the latest checkpoint continues it. Ranks agree
+on the step to stop at, so one signalled rank stops them all. A second signal
+stops the process without saving.
+
+`anthro checkpoints prune` applies the same policy to runs already on disk. It
+only reports until told to delete, and never touches a checkpoint at or above a
+run's latest, where a live run may still be writing.
+
 The dataloader should prefer restartable sampling designs. Avoid relying on one
 large opaque shuffle whose exact internal state is hard to recover. Better
 patterns include deterministic shard ordering from a seed and pass id,
@@ -571,7 +591,7 @@ Retain the complete run directory as one artifact:
     step-........pt
 ```
 
-Do not preserve only a copied weight file. The run record, metrics, interval
+Do not preserve only a copied weight file. The run record, metrics, permanent
 checkpoints, compatibility identities, and latest pointer are needed for
 comparison, resume, provenance, and later runtime selection. A model runner can
 accept an explicit compatible checkpoint path beneath this root without copying

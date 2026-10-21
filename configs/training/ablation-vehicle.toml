@@ -48,7 +48,12 @@ weight_decay = 0.0
 determinism = "relaxed"
 
 log_every_steps = 1000
-checkpoint_every_steps = 25000
+
+# A stopped arm loses at most the interval since its last save, and each save
+# replaces the one before it unless it falls on the permanent cadence, which
+# is what a shakedown or a later re-reading draws on.
+checkpoint_every_steps = 500
+keep_every_steps = 25000
 
 # `precision`, `matmul_precision` and `compilation` are deliberately absent so
 # that the vehicle takes the decided defaults rather than a copy of them that

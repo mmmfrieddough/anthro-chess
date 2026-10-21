@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import logging
+import signal
 from collections import deque
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor
@@ -784,7 +785,10 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
             # runtime dislikes it, and spawning re-imports the entry point, so
             # it fails outright wherever the entry point is not importable.
             # A worker touches Parquet and chess logic and no accelerator.
-            self._pool = ProcessPoolExecutor(max_workers=self.streaming.workers)
+            self._pool = ProcessPoolExecutor(
+                max_workers=self.streaming.workers,
+                initializer=_ignore_stop_signals,
+            )
         return self._pool
 
     def _job(self, planned: _PlannedBatch) -> _BatchJob:
@@ -852,6 +856,18 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         for _, pending in self._inflight:
             pending.cancel()
         self._inflight.clear()
+
+
+def _ignore_stop_signals() -> None:
+    """Leave a stop signal to the process that owns the pool.
+
+    A terminal or a service manager signals every process in the group, and
+    training answers by finishing its step and saving, which needs these
+    workers alive until then. The loader shuts them down when it closes.
+    """
+
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
 
 def _materialize_batch(job: _BatchJob) -> SequenceBatch:

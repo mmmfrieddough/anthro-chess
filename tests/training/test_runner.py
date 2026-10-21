@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import signal
 import subprocess
 import sys
+import time
 import tomllib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from io import StringIO
 from pathlib import Path
 from typing import Any, cast
@@ -33,10 +36,12 @@ from anthro_chess.training import (
     CheckpointError,
     TrainingConfig,
     TrainingError,
+    TrainingStopped,
     load_training_checkpoint,
     run_training,
 )
 from anthro_chess.training.checkpoints import (
+    latest_checkpoint_path,
     save_training_checkpoint,
     training_identity_sha256,
 )
@@ -45,6 +50,7 @@ from anthro_chess.training.devices import (
     DeviceCapabilities,
 )
 from anthro_chess.training.distributed import SINGLE_PROCESS, DataParallel
+from anthro_chess.training.losses import masked_action_cross_entropy
 from anthro_chess.training.runner import (
     _EXECUTION_COMPATIBILITY_KEYS,
     _EXECUTION_PROVENANCE_KEYS,
@@ -1374,6 +1380,31 @@ def test_gradient_accumulation_uses_multiple_batches_per_optimizer_step(
     assert all(record["peak_allocated_memory_bytes"] is None for record in records)
 
 
+def _rank_command(
+    config: Path,
+    output_directory: Path,
+    ranks: int,
+    recording: Sequence[str] = ("--no-record",),
+) -> list[str]:
+    """Train through the command line under `torchrun`, as a real launch does."""
+
+    return [
+        sys.executable,
+        "-m",
+        "torch.distributed.run",
+        "--standalone",
+        f"--nproc-per-node={ranks}",
+        "-m",
+        "anthro_chess",
+        "train",
+        "--config",
+        str(config),
+        *recording,
+        "--output-directory",
+        str(output_directory),
+    ]
+
+
 def _launch_ranks(
     config: Path,
     output_directory: Path,
@@ -1381,8 +1412,6 @@ def _launch_ranks(
     *,
     results: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Train through the command line under `torchrun`, as a real launch does."""
-
     recording = (
         ["--no-record"]
         if results is None
@@ -1394,21 +1423,7 @@ def _launch_ranks(
         ]
     )
     launched = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "torch.distributed.run",
-            "--standalone",
-            f"--nproc-per-node={ranks}",
-            "-m",
-            "anthro_chess",
-            "train",
-            "--config",
-            str(config),
-            *recording,
-            "--output-directory",
-            str(output_directory),
-        ],
+        _rank_command(config, output_directory, ranks, recording),
         capture_output=True,
         text=True,
         check=False,
@@ -1423,8 +1438,9 @@ def _data_parallel_config(
     prepared: Any,
     *,
     steps: int,
-    resume_from: Path | None = None,
+    resume_from: Path | str | None = None,
     device: str = "cpu",
+    checkpoint_every_steps: int = 2,
 ) -> Path:
     # Nothing draws randomness, so a rank's own stream cannot move the weights
     # and what is left between one process and two is summation order.
@@ -1435,7 +1451,7 @@ def _data_parallel_config(
         run_name="ranks",
         validation=True,
         steps=steps,
-        checkpoint_every_steps=2,
+        checkpoint_every_steps=checkpoint_every_steps,
         resume_from=resume_from,
         device=device,
         train_batch="positions_per_batch = 8",
@@ -2731,3 +2747,243 @@ def test_no_decay_loads_a_single_group_optimizer_state() -> None:
         parameter.grad = torch.full_like(parameter, 0.01)
     plain.step()
     torch.optim.AdamW(groups, lr=1e-3).load_state_dict(plain.state_dict())
+
+
+def _checkpoint_names(run: Path) -> list[str]:
+    return sorted(path.name for path in (run / "checkpoints").glob("step-*.pt"))
+
+
+def test_a_run_keeps_its_rolling_checkpoint_its_permanent_set_and_its_final_step(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    config = _write_training_config(
+        tmp_path / "config",
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        run_name="run",
+        validation=False,
+        steps=9,
+        checkpoint_every_steps=2,
+        extra="keep_every_steps = 3\nkeep_steps = [5]\n",
+    )
+    run = tmp_path / "runs/run"
+    # A branch that took the checkpoint at step 8 before the run moved past it.
+    branch = tmp_path / "runs/branch"
+    branch.mkdir(parents=True)
+    (branch / "run.json").write_text(
+        json.dumps(
+            {
+                "optimization": {
+                    "resumed_from": str(
+                        (run / "checkpoints/step-00000008.pt").resolve()
+                    )
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run_training(load_config(TrainingConfig, path=config), output_directory=run)
+
+    # Saved at 2, 3, 4, 5, 6, 8 and 9: the cadence and every step the policy
+    # keeps, including the ones the cadence does not land on.
+    assert _checkpoint_names(run) == [
+        "step-00000003.pt",
+        "step-00000005.pt",
+        "step-00000006.pt",
+        "step-00000008.pt",
+        "step-00000009.pt",
+    ]
+
+
+def test_a_failed_save_leaves_the_checkpoint_before_it_where_a_resume_finds_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    config = _write_training_config(
+        tmp_path / "config",
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        run_name="run",
+        validation=False,
+        steps=4,
+        checkpoint_every_steps=1,
+        extra="keep_every_steps = 100\n",
+    )
+    run = tmp_path / "run"
+    replace = os.replace
+    pointer_moves: list[str] = []
+
+    def fail_the_third_pointer_move(source: Any, destination: Any) -> None:
+        if Path(destination).name == "latest.json":
+            pointer_moves.append(str(destination))
+            if len(pointer_moves) == 3:
+                raise OSError("disk full")
+        replace(source, destination)
+
+    monkeypatch.setattr(
+        "anthro_chess.training.checkpoints.os.replace", fail_the_third_pointer_move
+    )
+
+    with pytest.raises(TrainingError, match="disk full"):
+        run_training(load_config(TrainingConfig, path=config), output_directory=run)
+
+    # Step 3's weights landed but the pointer never moved to them, so the
+    # save is incomplete and step 2 is still the run's latest.
+    assert _checkpoint_names(run) == ["step-00000002.pt", "step-00000003.pt"]
+    assert latest_checkpoint_path(run).name == "step-00000002.pt"
+    assert load_training_checkpoint(latest_checkpoint_path(run))["global_step"] == 2
+
+
+def test_a_stop_signal_saves_the_step_in_flight_and_resuming_continues_the_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+
+    def config(name: str, resume_from: str | None = None) -> Path:
+        return _write_training_config(
+            tmp_path / f"{name}-config",
+            normalized=prepared.normalized_path,
+            manifest=prepared.manifest_path,
+            run_name=name,
+            validation=False,
+            steps=6,
+            checkpoint_every_steps=100,
+            extra="keep_every_steps = 100\n",
+            resume_from=resume_from,
+        )
+
+    uninterrupted = run_training(
+        load_config(TrainingConfig, path=config("uninterrupted")),
+        output_directory=tmp_path / "uninterrupted",
+    )
+    losses: list[torch.Tensor] = []
+
+    def signalled_during_the_third_step(*arguments: Any) -> torch.Tensor:
+        losses.append(masked_action_cross_entropy(*arguments))
+        if len(losses) == 3:
+            os.kill(os.getpid(), signal.SIGTERM)
+        return losses[-1]
+
+    monkeypatch.setattr(
+        "anthro_chess.training.runner.masked_action_cross_entropy",
+        signalled_during_the_third_step,
+    )
+    handler = signal.getsignal(signal.SIGTERM)
+    stopped = tmp_path / "stopped"
+
+    with pytest.raises(TrainingStopped, match="optimizer step 3"):
+        run_training(
+            load_config(TrainingConfig, path=config("stopped")),
+            output_directory=stopped,
+        )
+
+    assert signal.getsignal(signal.SIGTERM) == handler
+    assert _checkpoint_names(stopped) == ["step-00000003.pt"]
+    assert latest_checkpoint_path(stopped).name == "step-00000003.pt"
+    record = json.loads((stopped / "run.json").read_text(encoding="utf-8"))
+    assert record["complete"] is False
+    assert record["optimization"]["completed_steps"] == 3
+
+    monkeypatch.undo()
+    resumed = run_training(
+        load_config(TrainingConfig, path=config("stopped", resume_from="latest")),
+        output_directory=stopped,
+    )
+
+    assert resumed.final_parameter_sha256 == uninterrupted.final_parameter_sha256
+    # The stop's checkpoint was only ever for resuming, so the next save
+    # replaced it.
+    assert _checkpoint_names(stopped) == ["step-00000006.pt"]
+
+
+def test_a_stop_signal_to_one_rank_stops_every_rank_at_one_saved_step(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    stopped = tmp_path / "stopped"
+    launched = subprocess.Popen(
+        _rank_command(
+            _data_parallel_config(
+                tmp_path / "config",
+                prepared,
+                steps=100_000,
+                checkpoint_every_steps=100_000,
+            ),
+            stopped,
+            2,
+        ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        metrics = stopped / "metrics.jsonl"
+        while not metrics.is_file() or len(metrics.read_bytes().splitlines()) < 3:
+            assert launched.poll() is None, launched.communicate()[1]
+            time.sleep(0.05)
+        # Either rank: whichever it is, the other was never signalled and has
+        # to stop at the same step for the save's collective drain to complete.
+        ranks = subprocess.run(
+            ["pgrep", "-P", str(launched.pid)],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+        os.kill(int(ranks[0]), signal.SIGTERM)
+        _, errors = launched.communicate(timeout=600)
+    finally:
+        launched.kill()
+
+    assert launched.returncode != 0
+    stops = [
+        int(line.split("optimizer step ")[1].split(";")[0])
+        for line in errors.splitlines()
+        if "anthro train: stopped by a signal" in line
+    ]
+    assert len(stops) == 2 and len(set(stops)) == 1, errors
+    step = stops[0]
+    assert latest_checkpoint_path(stopped).name == f"step-{step:08d}.pt"
+
+    continued = _data_parallel_config(
+        tmp_path / "continued-config",
+        prepared,
+        steps=step + 2,
+        resume_from="latest",
+    )
+    _launch_ranks(continued, stopped, 2)
+    uninterrupted = run_training(
+        load_config(
+            TrainingConfig,
+            path=_data_parallel_config(
+                tmp_path / "uninterrupted-config", prepared, steps=step + 2
+            ),
+        ),
+        output_directory=tmp_path / "uninterrupted",
+    )
+
+    final = load_training_checkpoint(latest_checkpoint_path(stopped))
+    expected = load_training_checkpoint(uninterrupted.checkpoint_path)
+    assert final["global_step"] == step + 2
+    assert final["counters"] == expected["counters"]
+    for name, value in expected["model_state"].items():
+        torch.testing.assert_close(final["model_state"][name], value)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, StrictBool, model_validator
+from pydantic import Field, PositiveInt, StrictBool, model_validator
 
 from anthro_chess.config import ConfigModel
 from anthro_chess.data import SequenceDataConfig
@@ -94,7 +94,15 @@ class TrainingConfig(ConfigModel):
     #: capping every step.
     gradient_clip_norm: float = Field(default=10.0, gt=0.0)
     log_every_steps: int = Field(default=1, ge=1)
+    #: How often a run saves, which bounds what stopping it loses. Each save
+    #: replaces the one before it unless the retention settings below keep it.
     checkpoint_every_steps: int = Field(default=100, ge=1)
+    #: Which checkpoints outlive the save after them: every multiple of this,
+    #: every step in ``keep_steps``, and the final step, each saved whether or
+    #: not the cadence above lands on it. Unset keeps every checkpoint.
+    keep_every_steps: int | None = Field(default=None, ge=1)
+    #: For a trunk branched at steps the permanent cadence does not land on.
+    keep_steps: tuple[PositiveInt, ...] = ()
     resume_from: Literal["latest"] | Path | None = None
     gradient_accumulation_steps: int = Field(default=1, ge=1)
     device: DeviceSelection = "auto"
