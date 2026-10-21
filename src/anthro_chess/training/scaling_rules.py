@@ -207,12 +207,10 @@ WEIGHT_DECAY = 0.0
 #: change moves the constant rather than silently rescaling the average.
 #:
 #: This is the vehicle's own span, held because no other one survived being
-#: checked. A sweep at width 32 and 800 positions per parameter put the optimum
-#: at 33 steps with this value costing 1.0%, and the same sweep at half that
-#: horizon put it at 100 steps. A constant span predicts neither, and a constant
-#: share of the run predicts the arm that read worst. Nothing here identifies a
-#: span to carry, so the value stays where every comparison in this milestone is
-#: read against, and `#552` holds what would settle it.
+#: checked. At width 32 the optimum moved from 33 to 100 steps when the horizon
+#: halved, and at the vehicle spans of 33 and 100 steps read level with this one.
+#: ``docs/decisions/0102-the-second-moment-span-stays-at-the-vehicles.md``
+#: carries both readings.
 SECOND_MOMENT_POSITIONS = 1.6384e7
 
 
