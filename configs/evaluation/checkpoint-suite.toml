@@ -3,7 +3,8 @@
 # This is the default way a new checkpoint is evaluated. It composes the
 # per-benchmark selections beside it rather than restating any of their
 # settings: each step names a file, and the sweep supplies only the checkpoint,
-# the order, and whether the reading is committed.
+# the order, whether the reading is committed, and the overrides that make a
+# step a variant reading of its benchmark.
 #
 # The model selection is deliberately absent, so the sweep uses the same
 # machine-local default checkpoint the playable engine reads. Override it for
@@ -82,7 +83,7 @@ config = "configs/evaluation/rating-ladder.toml"
 [benchmarks.ladder-bullet]
 # The same ladder at bullet. A clock-reading model's dial is not the same at
 # every speed, so a dial read at blitz says nothing about it here. 1+0 is 72%
-# of the pool's games rated in the bullet pool.
+# of the pool's bullet-rated games.
 benchmark = "ladder"
 config = "configs/evaluation/rating-ladder.toml"
 variant = [

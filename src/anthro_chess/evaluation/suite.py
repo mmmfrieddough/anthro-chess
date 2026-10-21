@@ -92,7 +92,8 @@ class SuiteBenchmarkConfig(ConfigModel):
 
     Everything about *how* the benchmark measures stays in its own selection
     file. What lives here is only what the file cannot know: where it sits in
-    the order and whether this sweep commits its reading.
+    the order, whether this sweep commits its reading, and what makes it a
+    variant when one benchmark runs as several steps.
     """
 
     #: The registered benchmark this step runs, when the step is named
