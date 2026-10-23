@@ -16,7 +16,7 @@ from anthro_chess.evaluation import MoveValidationMetrics
 from anthro_chess.evaluation.results import ResultEnvelope
 from anthro_chess.interfaces import cli
 from anthro_chess.interfaces.cli import main
-from anthro_chess.training import TrainingConfig, TrainingResult
+from anthro_chess.training import TrainingConfig, TrainingResult, TrainingStopped
 
 
 def test_smoke_command_needs_no_external_resources(
@@ -825,6 +825,33 @@ split = "train"
         "Validation: raw_move_loss=7.000000 legal_move_loss=2.500000 "
         "uniform_over_legal=3.000000"
     ) in command_output
+
+
+def test_a_stopped_run_exits_on_a_code_of_its_own(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "training.toml"
+    config.write_text(
+        """
+[train]
+normalized = "normalized"
+manifest = "manifest.json"
+
+[train.loader]
+split = "train"
+""",
+        encoding="utf-8",
+    )
+
+    def stopped(*_: object, **__: object) -> TrainingResult:
+        raise TrainingStopped("stopped by a signal at optimizer step 3")
+
+    monkeypatch.setattr("anthro_chess.training.run_training", stopped)
+
+    assert main(["train", "--config", str(config)]) == 4
+    assert "optimizer step 3" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

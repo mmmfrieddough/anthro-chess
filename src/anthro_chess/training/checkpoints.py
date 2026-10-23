@@ -53,6 +53,13 @@ def checkpoint_path(output_directory: Path, global_step: int) -> Path:
     return output_directory / _CHECKPOINT_DIRECTORY / f"step-{global_step:08d}.pt"
 
 
+def checkpoint_step(path: Path) -> int | None:
+    """Return the optimizer step a checkpoint's file name records, if it is one."""
+
+    match = _CHECKPOINT_PATTERN.fullmatch(path.name)
+    return int(match.group(1)) if match is not None else None
+
+
 def latest_checkpoint_path(output_directory: Path) -> Path:
     """Resolve the last atomically completed checkpoint for a run directory."""
 

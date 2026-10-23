@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import random
+import signal
 import time
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, nullcontext
@@ -104,13 +105,19 @@ from anthro_chess.training.efficiency import (
 )
 from anthro_chess.training.health import StepHealth, StepHealthMonitor
 from anthro_chess.training.losses import masked_action_cross_entropy
+from anthro_chess.training.retention import (
+    RetentionPolicy,
+    branch_point,
+    protected_checkpoints,
+    remove_checkpoint,
+)
 from anthro_chess.training.schedule import LearningRateSchedule
 from anthro_chess.training.tensorboard import (
     TENSORBOARD_DIRECTORY,
     TrainingTensorBoard,
 )
 
-RUN_ARTIFACT_VERSION = 7
+RUN_ARTIFACT_VERSION = 8
 logger = logging.getLogger(__name__)
 
 _FIRST_MOMENT_DECAY = 0.9
@@ -160,6 +167,53 @@ class TrainingDiverged(TrainingError):
     overflowed, and then it is the metrics writer that fails, several intervals
     after the model actually left the finite range.
     """
+
+
+class TrainingStopped(TrainingError):
+    """Raised once a run has saved in answer to a stop signal.
+
+    A stop is a pause rather than a failure, so the command exits on its own
+    code and resuming from the latest checkpoint continues the run.
+    """
+
+
+class _StopRequest:
+    """Defer SIGTERM and SIGINT to the end of the optimizer step in flight.
+
+    A repeated signal changes nothing. One sent to a process group arrives
+    twice, because `uv run` forwards to its child the signal that child already
+    received, so treating the second as more urgent would lose the save.
+    """
+
+    def __init__(self, parallel: DataParallel) -> None:
+        self.received = False
+        self._previous: dict[signal.Signals, Any] = {}
+        # Ranks can see a signal at different steps, and a save drains the step
+        # totals collectively, so they agree on the step to stop at. Over a host
+        # group, because agreeing over the device one would synchronize every
+        # step with the device.
+        self._group = dist.new_group(backend="gloo") if parallel.distributed else None
+
+    def __enter__(self) -> _StopRequest:
+        for stop in (signal.SIGTERM, signal.SIGINT):
+            self._previous[stop] = signal.signal(stop, self._receive)
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        for stop, handler in self._previous.items():
+            signal.signal(stop, handler)
+
+    def _receive(self, _signum: int, _frame: object) -> None:
+        self.received = True
+
+    def agreed(self) -> bool:
+        """Return whether any rank has been asked to stop."""
+
+        if self._group is None:
+            return self.received
+        flag = torch.tensor([self.received], dtype=torch.int32)
+        dist.all_reduce(flag, op=dist.ReduceOp.MAX, group=self._group)
+        return bool(flag.item())
 
 
 def _refuse_non_finite(record: Mapping[str, object], global_step: int) -> None:
@@ -254,6 +308,7 @@ class _RunRecordWriter:
     optimizer: str
     starting_step: int
     resumed_from: Path | None
+    branched_from: Path | None
     initial_parameter_sha256: str
 
     def write(
@@ -287,6 +342,12 @@ class _RunRecordWriter:
                     str(self.resumed_from.resolve())
                     if self.resumed_from is not None
                     else None
+                ),
+                # The checkpoint in another run these weights continue from,
+                # which outlives the run resuming itself where `resumed_from`
+                # does not.
+                "branched_from": (
+                    str(self.branched_from) if self.branched_from is not None else None
                 ),
                 "checkpoint": (
                     str(checkpoint.resolve()) if checkpoint is not None else None
@@ -660,6 +721,7 @@ def _train(
             optimizer=type(optimizer).__name__,
             starting_step=starting_step,
             resumed_from=resumed_from,
+            branched_from=branch_point(output_directory, resumed_from),
             initial_parameter_sha256=initial_parameter_sha256,
         )
         if parallel.primary:
@@ -688,6 +750,18 @@ def _train(
             processed_positions=processed_positions,
             log_every_steps=config.log_every_steps,
             checkpoint_every_steps=config.checkpoint_every_steps,
+            retention=RetentionPolicy(
+                final_step=config.steps,
+                keep_every_steps=config.keep_every_steps,
+                keep_steps=frozenset(config.keep_steps),
+            ),
+            superseded=(
+                resumed_from
+                if resumed_from is not None
+                and resumed_from.resolve()
+                == checkpoint_path(output_directory, starting_step).resolve()
+                else None
+            ),
             gradient_accumulation_steps=config.gradient_accumulation_steps,
             device=device,
             autocast=_autocast(config, device),
@@ -843,6 +917,8 @@ def _optimize(
     processed_positions: int,
     log_every_steps: int,
     checkpoint_every_steps: int,
+    retention: RetentionPolicy,
+    superseded: Path | None,
     gradient_accumulation_steps: int,
     device: torch.device,
     autocast: AbstractContextManager[None],
@@ -865,6 +941,9 @@ def _optimize(
     data-parallel wrapper whose backward pass averages gradients and ``model``
     is what it wraps, so a checkpoint's keys stay the ones a single process
     loads.
+
+    ``superseded`` is the checkpoint of this run the next save replaces, which
+    is the one it resumed from when it resumed from its own.
     """
 
     model.train()
@@ -907,6 +986,7 @@ def _optimize(
             if parallel.primary
             else None
         )
+        stop = opened.enter_context(_StopRequest(parallel))
         for global_step in range(starting_step + 1, steps + 1):
             # Everything that decides how a step is instrumented is resolved
             # before it runs. A probe step has to know it is one before its
@@ -916,7 +996,9 @@ def _optimize(
             reported = (
                 global_step % log_every_steps == 0 or global_step == steps or bool(due)
             )
-            saving = global_step % checkpoint_every_steps == 0 or global_step == steps
+            saving = global_step % checkpoint_every_steps == 0 or retention.requires(
+                global_step
+            )
             draining = reported or saving
             if not monitor.interval_open:
                 monitor.begin_interval(global_step)
@@ -1028,7 +1110,8 @@ def _optimize(
                 health_monitor,
                 charged_instrumentation,
             )
-            drained = totals.drain() if draining else None
+            stopping = stop.agreed()
+            drained = totals.drain() if draining or stopping else None
             monitor.end_step()
 
             average_loss: float | None = None
@@ -1090,8 +1173,7 @@ def _optimize(
                 )
                 readings.extend(cadence_readings)
                 efficiency_paths.extend(cadence_efficiency_paths)
-            if saving:
-                saved_step = global_step
+            if saving or stopping:
                 saved_checkpoint = checkpoint_path(output_directory, global_step)
                 if parallel.primary:
                     checkpoint_started = time.perf_counter()
@@ -1107,11 +1189,21 @@ def _optimize(
                         device=device,
                         run_record=run_record,
                     )
+                    if superseded is not None and not retention.retains(saved_step):
+                        _discard_superseded(superseded, output_directory)
                     monitor.charge(
                         time.perf_counter() - checkpoint_started,
                         kind="checkpoint",
                     )
                     logger.info("Saved checkpoint at optimizer step %s", global_step)
+                superseded, saved_step = saved_checkpoint, global_step
+            # A stop at the final step lets the run finish, since a checkpoint
+            # at its target is one no resume can continue from.
+            if stopping and global_step < steps:
+                raise TrainingStopped(
+                    f"stopped by a signal at optimizer step {global_step}; "
+                    f"resuming from {saved_checkpoint} continues the run"
+                )
     if saved_checkpoint is None:
         raise TrainingError("training completed without saving a checkpoint")
     return _OptimizationResult(
@@ -1283,6 +1375,22 @@ def _save_step_checkpoint(
     )
 
 
+def _discard_superseded(path: Path, output_directory: Path) -> None:
+    """Remove the checkpoint a later save replaced, unless another run reads it.
+
+    Called only once the later checkpoint, the latest pointer, and the run
+    record all name the later one, so an interruption at any point before this
+    leaves the earlier checkpoint where a resume finds it.
+    """
+
+    try:
+        remove_checkpoint(
+            path, protected=protected_checkpoints(output_directory.parent)
+        )
+    except CheckpointError as error:
+        logger.warning("%s; the run continues and leaves it in place", error)
+
+
 def _charge_instrumentation(
     monitor: TrainingEfficiencyMonitor,
     health_monitor: StepHealthMonitor,
@@ -1410,6 +1518,8 @@ def compatibility_record(
             "device",
             "efficiency",
             "evaluation",
+            "keep_every_steps",
+            "keep_steps",
             "log_every_steps",
             "model",
             "profile_phases",

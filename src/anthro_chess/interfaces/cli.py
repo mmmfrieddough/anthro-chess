@@ -164,6 +164,15 @@ def _worker_count(value: str) -> int:
     return count
 
 
+def _optimizer_step(value: str) -> int:
+    """Read an optimizer step, which counts from one."""
+
+    step = int(value)
+    if step < 1:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an optimizer step")
+    return step
+
+
 def _available_cores() -> int:
     # What this process may run on rather than what the machine holds: under a
     # cpuset or a taskset the two disagree, and the machine's count would fork
@@ -1161,6 +1170,61 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     select_parser.set_defaults(handler=_run_model_select)
+
+    checkpoints_parser = subcommands.add_parser(
+        "checkpoints",
+        help="Maintain the checkpoints retained runs keep.",
+    )
+    checkpoints_commands = checkpoints_parser.add_subparsers(
+        dest="checkpoints_command", required=True
+    )
+    prune_parser = checkpoints_commands.add_parser(
+        "prune",
+        help="Remove the checkpoints a run's retention policy no longer keeps.",
+        description=(
+            "Report, and with --delete remove, every checkpoint below a run's "
+            "latest that its retention policy does not keep. A checkpoint "
+            "another run resumed from, or the default model selection names, "
+            "is kept whatever the policy says."
+        ),
+    )
+    prune_parser.add_argument(
+        "run",
+        nargs="*",
+        help=(
+            "Retained run directory names, relative to the run root. Omit to "
+            "prune every run beneath it."
+        ),
+    )
+    prune_parser.add_argument(
+        "--run-root",
+        type=Path,
+        help=(
+            "Directory holding retained training runs. Defaults to "
+            "ANTHRO_CHESS_RUN_ROOT."
+        ),
+    )
+    prune_parser.add_argument(
+        "--keep-every-steps",
+        type=_optimizer_step,
+        help=(
+            "Permanent cadence for a run whose record declares none. Without "
+            "it, such a run keeps every checkpoint."
+        ),
+    )
+    prune_parser.add_argument(
+        "--keep-step",
+        type=_optimizer_step,
+        action="append",
+        default=[],
+        help="A further step to keep in every run pruned. Repeatable.",
+    )
+    prune_parser.add_argument(
+        "--delete",
+        action="store_true",
+        help="Remove what the report lists. Without it nothing is removed.",
+    )
+    prune_parser.set_defaults(handler=_run_checkpoints_prune)
     return parser
 
 
@@ -1415,6 +1479,69 @@ def _run_model_select(arguments: argparse.Namespace) -> int:
         return 2
 
     print(f"Default model selection: {record_path}")
+    return 0
+
+
+def _run_checkpoints_prune(arguments: argparse.Namespace) -> int:
+    from anthro_chess.config import ConfigError
+    from anthro_chess.training.checkpoints import CheckpointError
+    from anthro_chess.training.retention import (
+        plan_pruning,
+        protected_checkpoints,
+        remove_checkpoint,
+    )
+
+    try:
+        run_root = arguments.run_root or required_root(
+            RUN_ROOT_VARIABLE,
+            alternative="a run root must be provided with --run-root",
+        )
+    except ConfigError as error:
+        print(f"anthro checkpoints prune: {error}", file=sys.stderr)
+        return 2
+    runs = (
+        [run_root / name for name in arguments.run]
+        if arguments.run
+        else sorted(path.parent for path in run_root.glob("*/checkpoints"))
+    )
+    protected = protected_checkpoints(run_root)
+    plans = [
+        plan_pruning(
+            run,
+            protected=protected,
+            keep_every_steps=arguments.keep_every_steps,
+            keep_steps=arguments.keep_step,
+        )
+        for run in runs
+    ]
+    reported = [plan for plan in plans if plan.removable or plan.held]
+    width = max((len(plan.run_path.name) for plan in reported), default=0)
+    lines = [
+        f"{plan.run_path.name:<{width}}  remove {len(plan.removable):>4}  "
+        f"{plan.removable_bytes / 2**30:7.2f} GiB  held {len(plan.held)}"
+        for plan in reported
+    ]
+    lines.extend(
+        f"{plan.run_path.name}: skipped, {plan.skipped}"
+        for plan in plans
+        if plan.skipped is not None
+    )
+    count = sum(len(plan.removable) for plan in plans)
+    size = sum(plan.removable_bytes for plan in plans)
+    if arguments.delete:
+        try:
+            for plan in plans:
+                for path in plan.removable:
+                    remove_checkpoint(path, protected=protected)
+        except CheckpointError as error:
+            print(f"anthro checkpoints prune: {error}", file=sys.stderr)
+            return 2
+    verb = "removed" if arguments.delete else "would remove"
+    lines.append(
+        f"{verb} {count} checkpoint(s), {size / 2**30:.2f} GiB, "
+        f"from {sum(bool(plan.removable) for plan in plans)} run(s)"
+    )
+    print("\n".join(lines))
     return 0
 
 
@@ -4096,6 +4223,7 @@ def _run_train(arguments: argparse.Namespace) -> int:
         TrainingConfig,
         TrainingDiverged,
         TrainingError,
+        TrainingStopped,
         run_training,
     )
     from anthro_chess.training.distributed import (
@@ -4144,6 +4272,9 @@ def _run_train(arguments: argparse.Namespace) -> int:
     except TrainingDiverged as error:
         print(f"anthro train: {error}", file=sys.stderr)
         return 3
+    except TrainingStopped as error:
+        print(f"anthro train: {error}", file=sys.stderr)
+        return 4
     except (ConfigError, DistributedError, ResultsStoreError, TrainingError) as error:
         print(f"anthro train: {error}", file=sys.stderr)
         return 2

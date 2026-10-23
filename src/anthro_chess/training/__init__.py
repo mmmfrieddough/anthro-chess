@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         TrainingDiverged,
         TrainingError,
         TrainingResult,
+        TrainingStopped,
     )
 
 __all__ = [
@@ -39,6 +40,7 @@ __all__ = [
     "TrainingDiverged",
     "TrainingError",
     "TrainingResult",
+    "TrainingStopped",
     "checkpoint_path",
     "latest_checkpoint_path",
     "load_training_checkpoint",
@@ -55,6 +57,7 @@ def __getattr__(name: str) -> Any:
         "TrainingDiverged",
         "TrainingError",
         "TrainingResult",
+        "TrainingStopped",
         "run_training",
     }:
         from anthro_chess.training import runner
