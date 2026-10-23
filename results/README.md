@@ -54,10 +54,6 @@ Bulk diagnostics — per-position tables, slice breakdowns, generated games — 
 not belong here. They stay in the machine-local detail tier and are referenced
 from a record by path and digest.
 
-This directory holds no records yet. The pre-core ones it used to describe were
-deleted with the corpus generation they were read against, and nothing has been
-promoted since.
-
 `docs/evaluation.md` and `docs/decisions/0014-evaluation-result-storage.md`
 explain the layering; `docs/decisions/0013-benchmark-result-comparability.md`
 owns the fingerprint and bridge contract.

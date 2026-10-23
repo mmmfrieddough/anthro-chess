@@ -259,6 +259,10 @@ ordering is sliced at both. A cheaper reading is `--set` on the invocation that
 wants it, against the benchmark's own schema directly or through
 `benchmarks.<step>.overrides` on a sweep.
 
+**One benchmark can run as several steps.** A step can name the benchmark it
+runs and the overrides that make it a different reading of it, without a second
+copy of its selection, and reading such a step smaller keeps them.
+
 The suite adds no measurement of its own and registers no metric. Decision
 decomposition is the one step it cannot commit, because that family has no
 result kind: a decomposition is read per cell of the dials it was made under,
@@ -1832,6 +1836,10 @@ speeds. The control is part of what the ladder measured, so changing it starts
 new series. A model that reads no clock plays exactly what it played untimed.
 `docs/decisions/0099-the-rating-benchmarks-declare-the-control-of-their-games.md`
 says which control and why.
+
+**The sweep reads the ladder at blitz and at bullet**, as separate series.
+`docs/decisions/0104-the-accepted-set-composes-and-the-ladder-reads-two-speeds.md`
+says why.
 
 **What naming them does not settle is the scale the fitted ratings sit on**, and
 the reading says so beside them. The openings decide what the seats play; what a

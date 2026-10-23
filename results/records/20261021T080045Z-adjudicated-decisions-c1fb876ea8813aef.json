@@ -1,0 +1,663 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "adjudicated-decisions",
+    "version": 1
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "model.run_path=\"arm-495-combined\"",
+      "model.checkpoint=\"step-00069465.pt\""
+    ],
+    "sha256": "9bb269007c5e46469e2b1c576b323419d53f261cbf3c61d450a72fc9b67a60e3",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/evaluation/lichess-univ-2018-01-2021-06-checkpoint.toml"
+  },
+  "data": {
+    "components": [
+      {
+        "content_sha256": "ec98397dd18319a45ba080e2e41cb92fd19f82d75cf2e38e7d283e0458b534cb",
+        "games": 211475,
+        "projection": "move_prediction",
+        "projection_version": 1
+      }
+    ],
+    "game_ids_sha256": "8ff80e72aac7dadd07a418e0c951d3c56a1045a48cd74de903da00bc4525a94c",
+    "pool_id": "lichess-univ-2018-01-2021-06-test",
+    "pool_version": 1,
+    "selected_games": 211475,
+    "view": "canonical"
+  },
+  "detail": {
+    "bytes": 9149,
+    "description": "Per-predicate human and model rates with rating-band drill-down and opportunity counts.",
+    "path": "adjudicated-decisions/arm-495-combined-step-00069465/20261021T080045Z.json",
+    "sha256": "37294771d22154a0af32a9ab4073839ca0e1791604562f10bf4ea6de3934146f"
+  },
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": null,
+  "kind": "adjudicated-decisions",
+  "measurements": [
+    {
+      "dispersion": {
+        "bound": 0.012236347581084854,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 67712,
+        "value": 0.012181803816390797
+      },
+      "fingerprint": "4b2404d270179351ff26dac39bb330fc5824251e62e932d5b320af6c5f8628aa",
+      "metric": "adjudicated.mate_available_best_rank",
+      "sample_size": 90459,
+      "value": 1.603002465205231
+    },
+    {
+      "dispersion": {
+        "bound": 0.0015683210938594616,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 67712,
+        "value": 0.00156133027113713
+      },
+      "fingerprint": "72dd7d1327d23fe9a69a70306e3a5f53c4145de9e54cb61ac952a469bf6740b6",
+      "metric": "adjudicated.mate_available_human_gap",
+      "sample_size": 90459,
+      "value": 0.13466874495627856
+    },
+    {
+      "dispersion": {
+        "bound": 0.0026977271974722955,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 25698,
+        "value": 0.002678143445410406
+      },
+      "fingerprint": "e9b3933642ec5831a35e6c3d8c689e6ab0b0293d768dfa47ef40d9163505d2d0",
+      "metric": "adjudicated.mate_available_human_gap_1200_to_1599",
+      "sample_size": 34965,
+      "value": 0.14277134277134274
+    },
+    {
+      "dispersion": {
+        "bound": 0.002732794865120815,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 24389,
+        "value": 0.002712430513785245
+      },
+      "fingerprint": "06f8ef125e2e7e00534f49c9d82a8b0c9d535fe7b7ef87081d58f49f034b583f",
+      "metric": "adjudicated.mate_available_human_gap_1600_to_1999",
+      "sample_size": 30869,
+      "value": 0.12416987916680167
+    },
+    {
+      "dispersion": {
+        "bound": 0.005026181266854614,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 8323,
+        "value": 0.004962035058410149
+      },
+      "fingerprint": "383e7fca144e32798623c7c92be9f5453f153d9b585348244390a33e765468d5",
+      "metric": "adjudicated.mate_available_human_gap_2000_plus",
+      "sample_size": 10236,
+      "value": 0.09232121922626024
+    },
+    {
+      "dispersion": {
+        "bound": 0.0041995044360720055,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 9428,
+        "value": 0.004149150649054748
+      },
+      "fingerprint": "3d5a0d46a61e5a9282264f1e7c7b0050861a711c96b10ac340a69bff4fc89558",
+      "metric": "adjudicated.mate_available_human_gap_under_1200",
+      "sample_size": 14389,
+      "value": 0.16762804920425323
+    },
+    {
+      "dispersion": {
+        "bound": 0.0020164858309771683,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 67712,
+        "value": 0.00200749730495297
+      },
+      "fingerprint": "0cf4f88fae3b75039275758b84f04b24c68047ba4b4c7c8fa06e9e7c4d4c699f",
+      "metric": "adjudicated.mate_available_human_rate",
+      "sample_size": 90459,
+      "value": 0.6286494433942449
+    },
+    {
+      "dispersion": {
+        "bound": 0.0013048175468194172,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 67712,
+        "value": 0.001299001296441534
+      },
+      "fingerprint": "ded76e39a82e94c09e020151834545f3e8720f643d84d2d0100ada0ebaaf87e4",
+      "metric": "adjudicated.mate_available_policy_mass",
+      "sample_size": 90459,
+      "value": 0.603434926201799
+    },
+    {
+      "dispersion": {
+        "bound": 0.0017624454852748423,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 67712,
+        "value": 0.0017545893491853826
+      },
+      "fingerprint": "ee8f42746d93a2ae5f33ffe59102daa96ffbf961f73073ea559493e1472ccbc0",
+      "metric": "adjudicated.mate_available_selected_rate",
+      "sample_size": 90459,
+      "value": 0.7633181883505235
+    },
+    {
+      "dispersion": {
+        "bound": 0.0038268056860714522,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 79575,
+        "value": 0.003811098466167107
+      },
+      "fingerprint": "e90327072fd980f7ab2c261cc522ee0867b27d11b1d55c921e153869a3f91de4",
+      "metric": "adjudicated.mate_threatened_best_rank",
+      "sample_size": 131162,
+      "value": 1.349987038928958
+    },
+    {
+      "dispersion": {
+        "bound": 0.0010658949046023693,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 82355,
+        "value": 0.0010615963672117629
+      },
+      "fingerprint": "da22a89a7392af18171c09c13803bbf0221269edd1b502637ba16f10361bd0e7",
+      "metric": "adjudicated.mate_threatened_human_gap",
+      "sample_size": 139195,
+      "value": 0.037738424512374746
+    },
+    {
+      "dispersion": {
+        "bound": 0.0018451940731930097,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 30105,
+        "value": 0.0018328198307304183
+      },
+      "fingerprint": "81b19fd7d747ab6f475cc4478e1d3d6de84d28ff5faccbba829a40fd9cbbfed3",
+      "metric": "adjudicated.mate_threatened_human_gap_1200_to_1599",
+      "sample_size": 49499,
+      "value": 0.051192953392997786
+    },
+    {
+      "dispersion": {
+        "bound": 0.0016293133734498009,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 32343,
+        "value": 0.001618772468540279
+      },
+      "fingerprint": "8bfb1d15b679dece3aee711691faa30d12c3aad69ca380ddc7eafe5d4298a21a",
+      "metric": "adjudicated.mate_threatened_human_gap_1600_to_1999",
+      "sample_size": 53938,
+      "value": 0.026752938559086337
+    },
+    {
+      "dispersion": {
+        "bound": 0.00265471819734218,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 11039,
+        "value": 0.0026253035589691542
+      },
+      "fingerprint": "d9c4c1d9c4b5b105966cd5e8ac7194c2723ad11f323e388519a69ce58c39c654",
+      "metric": "adjudicated.mate_threatened_human_gap_2000_plus",
+      "sample_size": 18562,
+      "value": 0.001723952160327502
+    },
+    {
+      "dispersion": {
+        "bound": 0.0034045706979511045,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 10357,
+        "value": 0.0033656241744809837
+      },
+      "fingerprint": "47d8787f80f2805a16ae3a452e6355b5217e5739d12d81d6dd296f2adbbda501",
+      "metric": "adjudicated.mate_threatened_human_gap_under_1200",
+      "sample_size": 17196,
+      "value": 0.07234240521051405
+    },
+    {
+      "dispersion": {
+        "bound": 0.0013388262052027563,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 82355,
+        "value": 0.00133342699137995
+      },
+      "fingerprint": "d2d303da628989694c3651aa0e784d6c296c1911b28ed81d06a6182601cdea87",
+      "metric": "adjudicated.mate_threatened_human_rate",
+      "sample_size": 139195,
+      "value": 0.7568590825819893
+    },
+    {
+      "dispersion": {
+        "bound": 0.0010723431836487949,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 82355,
+        "value": 0.0010680186416601118
+      },
+      "fingerprint": "88cdb6631ead559c2b0a58b7885428433ffc8abe0035b0723cbd0a198e1a62f2",
+      "metric": "adjudicated.mate_threatened_policy_mass",
+      "sample_size": 139195,
+      "value": 0.720419252734249
+    },
+    {
+      "dispersion": {
+        "bound": 0.001282734878677341,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 82355,
+        "value": 0.0012775618697677183
+      },
+      "fingerprint": "143edad03c2c27efa78719a157e9a1cb1eaead276d0a9e516638706407d5a65b",
+      "metric": "adjudicated.mate_threatened_selected_rate",
+      "sample_size": 139195,
+      "value": 0.794597507094364
+    },
+    {
+      "dispersion": {
+        "bound": 0.0034407285843487795,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 211036,
+        "value": 0.0034323058342206115
+      },
+      "fingerprint": "45b7d4e58a99544d1c066d29e5fb51ef7b89f143e172208c76ff6797a4c0093c",
+      "metric": "adjudicated.material_concession_best_rank",
+      "sample_size": 11585077,
+      "value": 10.81922131376425
+    },
+    {
+      "dispersion": {
+        "bound": 6.713842126962046e-05,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 211036,
+        "value": 6.697406940852743e-05
+      },
+      "fingerprint": "5fe468eefbe79ad261f1a80adb39d4cd9417d0b6d16749354a93d99c8fda0a74",
+      "metric": "adjudicated.material_concession_human_gap",
+      "sample_size": 11585077,
+      "value": -0.017957843525770262
+    },
+    {
+      "dispersion": {
+        "bound": 0.00011834752352739072,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 85171,
+        "value": 0.0001178784339558675
+      },
+      "fingerprint": "a867560f8fee820d810d895f13a32edc5560e25aa227c533c3aa5f291940ac2a",
+      "metric": "adjudicated.material_concession_human_gap_1200_to_1599",
+      "sample_size": 3767050,
+      "value": -0.020480216615123236
+    },
+    {
+      "dispersion": {
+        "bound": 9.787404044112089e-05,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 95478,
+        "value": 9.750832323784358e-05
+      },
+      "fingerprint": "c5f9ee74da7da18628258e73cfc0254e14a80002befe97ccae7d35b79a7f67cd",
+      "metric": "adjudicated.material_concession_human_gap_1600_to_1999",
+      "sample_size": 4785989,
+      "value": -0.01556167387764577
+    },
+    {
+      "dispersion": {
+        "bound": 0.00015009575755101895,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 36697,
+        "value": 0.00014918429645349713
+      },
+      "fingerprint": "821c6b5adf1798c576b00df305962ed331b9c759806dd10822ab7da76a748a09",
+      "metric": "adjudicated.material_concession_human_gap_2000_plus",
+      "sample_size": 1955428,
+      "value": -0.012765491749120908
+    },
+    {
+      "dispersion": {
+        "bound": 0.0002628264781788629,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 29572,
+        "value": 0.00026104806898056827
+      },
+      "fingerprint": "9aec5b7b9a193e9a6f93e13ba240b85261c6513c57ef16041b2b939df2b7a034",
+      "metric": "adjudicated.material_concession_human_gap_under_1200",
+      "sample_size": 1076610,
+      "value": -0.029214850317199365
+    },
+    {
+      "dispersion": {
+        "bound": 7.172689466883352e-05,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 211036,
+        "value": 7.155131042949157e-05
+      },
+      "fingerprint": "4794ceae1b4548053a52ce591f4322ccdef6a766df0b3fa279c3ba0b8154de6e",
+      "metric": "adjudicated.material_concession_human_rate",
+      "sample_size": 11585077,
+      "value": 0.043306142894000615
+    },
+    {
+      "dispersion": {
+        "bound": 5.0411438500054514e-05,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 211036,
+        "value": 5.0288033546807426e-05
+      },
+      "fingerprint": "7259938671af4148c1440dce0cec92ae2e9aa19959b74895b83a94d6da9b9391",
+      "metric": "adjudicated.material_concession_policy_mass",
+      "sample_size": 11585077,
+      "value": 0.04439603758338905
+    },
+    {
+      "dispersion": {
+        "bound": 5.5681297926953105e-05,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 211036,
+        "value": 5.5544992592849116e-05
+      },
+      "fingerprint": "ae26843faeb3b9d8e9097b0e2f8bdd87dc290f48c88e25d939f513a3378d03dd",
+      "metric": "adjudicated.material_concession_selected_rate",
+      "sample_size": 11585077,
+      "value": 0.025348299368230354
+    },
+    {
+      "dispersion": {
+        "bound": 0.0018857454625288825,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 209658,
+        "value": 0.001881112550000477
+      },
+      "fingerprint": "bb838d454276c08be6784b88f8cb7caf579da6d318e8a7a636dc52573cf78d52",
+      "metric": "adjudicated.material_gain_best_rank",
+      "sample_size": 3577250,
+      "value": 1.8096736319798727
+    },
+    {
+      "dispersion": {
+        "bound": 0.00025187344140044013,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 209658,
+        "value": 0.0002512546369830763
+      },
+      "fingerprint": "22459697b64a1e44c7bb6f69721428e481998dc918684a01ceedc4efa25da5b7",
+      "metric": "adjudicated.material_gain_human_gap",
+      "sample_size": 3577250,
+      "value": 0.09823104339925925
+    },
+    {
+      "dispersion": {
+        "bound": 0.00042308180813964343,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 84007,
+        "value": 0.00042139293838178973
+      },
+      "fingerprint": "bc38ad445be82059527cd9d041252f6f086dc55c37c471f8a306ea9411fe5e2f",
+      "metric": "adjudicated.material_gain_human_gap_1200_to_1599",
+      "sample_size": 1215636,
+      "value": 0.10973679621202403
+    },
+    {
+      "dispersion": {
+        "bound": 0.00037870939559573534,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 94694,
+        "value": 0.0003772882496815092
+      },
+      "fingerprint": "8979645c31d3ebea2619bd954469fabf05e2e25f265b8440bdf729f0239575bc",
+      "metric": "adjudicated.material_gain_human_gap_1600_to_1999",
+      "sample_size": 1400989,
+      "value": 0.08274725925756743
+    },
+    {
+      "dispersion": {
+        "bound": 0.0005661551628947479,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 36502,
+        "value": 0.0005627079657151005
+      },
+      "fingerprint": "ecd5b205922082e675312cd950e61725559b4cdf65726821a0dbb0e453e62c0e",
+      "metric": "adjudicated.material_gain_human_gap_2000_plus",
+      "sample_size": 555527,
+      "value": 0.07179849044240871
+    },
+    {
+      "dispersion": {
+        "bound": 0.0008241871526791995,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 28861,
+        "value": 0.0008185419167170627
+      },
+      "fingerprint": "83594d4da38e1a6ad48b1f3c10895511c8f9d4b392ee6dc8ff05bb4b9202cfe2",
+      "metric": "adjudicated.material_gain_human_gap_under_1200",
+      "sample_size": 405098,
+      "value": 0.15350112812208405
+    },
+    {
+      "dispersion": {
+        "bound": 0.0003573012335951382,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 209658,
+        "value": 0.000356423413446857
+      },
+      "fingerprint": "fb12dc0b686b5d6085aec6055a2e550871707095a3e34106424a4fc8048faaa5",
+      "metric": "adjudicated.material_gain_human_rate",
+      "sample_size": 3577250,
+      "value": 0.6382958976867705
+    },
+    {
+      "dispersion": {
+        "bound": 0.00028517938276850286,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 209658,
+        "value": 0.00028447875208343715
+      },
+      "fingerprint": "01b648ec312667fd77a752906dc2fa56d75f4a5d188969408bdc68609aca03bf",
+      "metric": "adjudicated.material_gain_policy_mass",
+      "sample_size": 3577250,
+      "value": 0.635017589179244
+    },
+    {
+      "dispersion": {
+        "bound": 0.00032351089071925356,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 209658,
+        "value": 0.0003227160869196575
+      },
+      "fingerprint": "62f5370cf8486fccce703415515577b2d885917107c7df8d1c2057407a6f2e2c",
+      "metric": "adjudicated.material_gain_selected_rate",
+      "sample_size": 3577250,
+      "value": 0.7365269410860298
+    },
+    {
+      "dispersion": {
+        "bound": 0.09729014157408364,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 10636,
+        "value": 0.09619190129121033
+      },
+      "fingerprint": "c7eae111457996714ed0cb3f2ac8f9a1a936d9aa0e141eff718b9470b332d299",
+      "metric": "adjudicated.stalemate_available_best_rank",
+      "sample_size": 23001,
+      "value": 9.02473805486718
+    },
+    {
+      "dispersion": {
+        "bound": 0.002544206565111663,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 10636,
+        "value": 0.0025154867987247603
+      },
+      "fingerprint": "11129987e784febff645fae8dc4df9d69cfb25f6b7e65cce318f51bbbeb54832",
+      "metric": "adjudicated.stalemate_available_human_gap",
+      "sample_size": 23001,
+      "value": 0.03660710403895483
+    },
+    {
+      "dispersion": {
+        "bound": 0.0036262805132345277,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 3842,
+        "value": 0.003558127353008854
+      },
+      "fingerprint": "523ed38a005759fe3dcf74272bb2defacd0c3b1dde405eef3e00ec388b1d612e",
+      "metric": "adjudicated.stalemate_available_human_gap_1200_to_1599",
+      "sample_size": 8686,
+      "value": 0.02198940824314989
+    },
+    {
+      "dispersion": {
+        "bound": 0.004471104689697486,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 3805,
+        "value": 0.004386665444373292
+      },
+      "fingerprint": "11377eafc02c5b5fd3f70f431dcfa6176d1f48f682de8b5e20f776b1b6cb717a",
+      "metric": "adjudicated.stalemate_available_human_gap_1600_to_1999",
+      "sample_size": 7776,
+      "value": 0.04732510288065844
+    },
+    {
+      "dispersion": {
+        "bound": 0.00829448967496764,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 1603,
+        "value": 0.00805292142726925
+      },
+      "fingerprint": "654e83979bedfee6cce83a3331dd33c43da309e93b5bbda4153ccac9b1f0c38e",
+      "metric": "adjudicated.stalemate_available_human_gap_2000_plus",
+      "sample_size": 3131,
+      "value": 0.06739061002874482
+    },
+    {
+      "dispersion": {
+        "bound": 0.007224451425544284,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 1387,
+        "value": 0.006998208801616428
+      },
+      "fingerprint": "2a975aca344373af692c42f843ca2cf1f7630ff114179583d98b30a3aeab8825",
+      "metric": "adjudicated.stalemate_available_human_gap_under_1200",
+      "sample_size": 3408,
+      "value": 0.02112676056338028
+    },
+    {
+      "dispersion": {
+        "bound": 0.0018215719952317444,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 10636,
+        "value": 0.0018010095444946975
+      },
+      "fingerprint": "a7f07f48954ab40f8529062325ab1e86e94d1d672446818672d8edbccff36fb9",
+      "metric": "adjudicated.stalemate_available_human_rate",
+      "sample_size": 23001,
+      "value": 0.0779531324725012
+    },
+    {
+      "dispersion": {
+        "bound": 0.0017522804099267062,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 10636,
+        "value": 0.0017325001433762062
+      },
+      "fingerprint": "de8f1162b369345ceb7e86e4c0390376f572be69b9bade0cfdf3c90f63866b45",
+      "metric": "adjudicated.stalemate_available_policy_mass",
+      "sample_size": 23001,
+      "value": 0.11942286319418076
+    },
+    {
+      "dispersion": {
+        "bound": 0.002665994282193771,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 211475 game(s) of pool view 'canonical'",
+        "units": 10636,
+        "value": 0.0026358997395479924
+      },
+      "fingerprint": "0e0856dcdbc2474730efdaf9926fdc02ca745b89398d7d50a9350075321eef8c",
+      "metric": "adjudicated.stalemate_available_selected_rate",
+      "sample_size": 23001,
+      "value": 0.11456023651145603
+    }
+  ],
+  "recorded_at": "2026-10-21T08:00:45.544720Z",
+  "result_id": "c1fb876ea8813aef"
+}

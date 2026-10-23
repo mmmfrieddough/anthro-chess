@@ -1,0 +1,103 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "inference-efficiency",
+    "version": 3
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "model.run_path=\"arm-495-combined\"",
+      "model.checkpoint=\"step-00069465.pt\""
+    ],
+    "sha256": "c11e3b7db52791310bcb9a7ec89fa9bade45ea98efdf0b11249235b310bebc33",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/evaluation/inference-efficiency.toml"
+  },
+  "data": null,
+  "detail": {
+    "bytes": 1588,
+    "description": "What the model costs the cuda, at a batch nothing serves.",
+    "path": "inference-efficiency/arm-495-combined-step-00069465/20261021T074029Z-cuda-compute.json",
+    "sha256": "abe4456914642f8a707121d992d7e24ac26e8062835f679c276684394244d471"
+  },
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": {
+    "coordinates": {},
+    "cpu_threads": null,
+    "device": "cuda",
+    "device_name": "NVIDIA GeForce RTX 4090",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "platform_key": "Linux-x86_64",
+    "precision": "float32-matmul-high",
+    "torch_version": "2.13.0+cu130",
+    "workload": {
+      "benchmark_version": 3,
+      "compute_batch_size": 256,
+      "device": "cuda",
+      "target_rating": 1500,
+      "temperature": 1.0,
+      "throughput_history_plies": 40,
+      "throughput_seed": "anthro-inference-throughput-v1"
+    },
+    "workload_sha256": "183a9d9aa84c0c5b81f2f68becfb74d736f4f4ad3f8ae7224447a67fe730f8ac"
+  },
+  "kind": "inference-efficiency",
+  "measurements": [
+    {
+      "dispersion": {
+        "bound": 587.4195006365583,
+        "estimator": "repeated-process-replicates",
+        "source": "the mean of 6 process replicates on NVIDIA GeForce RTX 4090 (cuda, torch 2.13.0+cu130)",
+        "units": null,
+        "value": 281.1618534576555
+      },
+      "fingerprint": "1ece4afb61f8d4bab146dc5ea5880b46ec34d4c67a4bcd90f8a5d94df4d0130d",
+      "metric": "inference.forward_throughput_per_second",
+      "sample_size": 30,
+      "value": 51184.652521055075
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "623c4333cd0247704bd81b17e89e1ff1f9ef99722e2a98269e95202d62d4fed0",
+      "metric": "inference.peak_memory_mb",
+      "sample_size": 1,
+      "value": 96.46336000000001
+    }
+  ],
+  "recorded_at": "2026-10-21T07:40:29.048858Z",
+  "result_id": "4cb731252f16aeaa"
+}

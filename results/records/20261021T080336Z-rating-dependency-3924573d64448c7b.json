@@ -1,0 +1,183 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "rating-dependency",
+    "version": 1
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "model.run_path=\"arm-495-combined\"",
+      "model.checkpoint=\"step-00069465.pt\""
+    ],
+    "sha256": "9e464fdcbe9cbcaaac6cd1f20b7f27688b970f18275085d33e6632bf8f115db3",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/evaluation/rating-dependency.toml"
+  },
+  "data": {
+    "components": [
+      {
+        "content_sha256": "a69fd272a380307b355fe614ba01b19788deff440b40ce79a55d0f0ee1e7599a",
+        "games": 8000,
+        "projection": "move_prediction",
+        "projection_version": 1
+      }
+    ],
+    "game_ids_sha256": "e48ede678f42bf17822d177e4e35732eebde4c1dd18caf7c77ab0fbd6c37050e",
+    "pool_id": "lichess-univ-2018-01-2021-06-test",
+    "pool_version": 1,
+    "selected_games": 8000,
+    "view": "rating-dependency-8000"
+  },
+  "detail": {
+    "bytes": 7748,
+    "description": "Cross-conditioning and within-game dependency tables.",
+    "path": "rating-dependency/arm-495-combined-step-00069465/20261021T080336Z.json",
+    "sha256": "724dae2a184a0e390b632d127c14a13d42c9bb3e77f85e36857c7b3bcd2a2337"
+  },
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": null,
+  "kind": "rating-dependency",
+  "measurements": [
+    {
+      "dispersion": {
+        "bound": 0.0007647002778903016,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 8000 game(s) of pool view 'rating-dependency-8000'",
+        "units": 8000,
+        "value": 0.0007547455672988694
+      },
+      "fingerprint": "df7af1a04c58f0c4b81aa16c7ff9c3fb61605550134e21869f9a8e0425302eeb",
+      "metric": "dependency.clock_absent_degradation",
+      "sample_size": 534888,
+      "value": 0.03407874245256237
+    },
+    {
+      "dispersion": {
+        "bound": 0.00026706709874811115,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 8000 game(s) of pool view 'rating-dependency-8000'",
+        "units": 8000,
+        "value": 0.00026359047430661684
+      },
+      "fingerprint": "f505a50ef807de14acb77c69d1dbac57975ced1f29358f9e3473089bdefb6c9d",
+      "metric": "dependency.clock_state_absent_degradation",
+      "sample_size": 534888,
+      "value": 0.008969385138262398
+    },
+    {
+      "dispersion": {
+        "bound": 0.001116383531121944,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 8000 game(s) of pool view 'rating-dependency-8000'",
+        "units": 8000,
+        "value": 0.0011018506804317102
+      },
+      "fingerprint": "0948fd54a7fc5b61b7ad870f182ce8c81310efeb1632e6142e23ead619648f7f",
+      "metric": "dependency.rating_absent_degradation",
+      "sample_size": 534888,
+      "value": 0.08537215670732134
+    },
+    {
+      "dispersion": {
+        "bound": 0.0010779516404829494,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 8000 game(s) of pool view 'rating-dependency-8000'",
+        "units": 8000,
+        "value": 0.0010639190882231649
+      },
+      "fingerprint": "c0e304df960bd53a05fb03d3c809125f5f622fe32300c549a56c5656724b453e",
+      "metric": "dependency.rating_anchor_policy_divergence",
+      "sample_size": 534888,
+      "value": 0.5071863732283146
+    },
+    {
+      "dispersion": {
+        "bound": 0.0007750565742928668,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 8000 game(s) of pool view 'rating-dependency-8000'",
+        "units": 8000,
+        "value": 0.0007649670475695888
+      },
+      "fingerprint": "5f562d5f64c93ea52b5f52a30b465b2c79fd792a216f70ab76b4d127b8bb00a2",
+      "metric": "dependency.rating_anchor_top1_agreement",
+      "sample_size": 534888,
+      "value": 0.6300197424507561
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "8c567d278a51a3b2e4d8f944d79aa40066480e3c62dce119c0c1cd3841f8678a",
+      "metric": "dependency.rating_cross_conditioning_match_rate",
+      "sample_size": 4,
+      "value": 1.0
+    },
+    {
+      "dispersion": {
+        "bound": 0.0009569084219487922,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 8000 game(s) of pool view 'rating-dependency-8000'",
+        "units": 8000,
+        "value": 0.0009444515853574881
+      },
+      "fingerprint": "4b29504e4f7a8c558419b4accbb5532292f0bbb240a1225a0ed141074b601184",
+      "metric": "dependency.rating_cross_conditioning_penalty",
+      "sample_size": 534888,
+      "value": 0.1368513423493718
+    },
+    {
+      "dispersion": {
+        "bound": 0.0008727905914722206,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 8000 game(s) of pool view 'rating-dependency-8000'",
+        "units": 8000,
+        "value": 0.0008614287834590198
+      },
+      "fingerprint": "cc4aadf03bf93ba14b48f6b505e6fd6e99676f6f3ade6dff3e981d19037cc286",
+      "metric": "dependency.rating_shuffled_degradation",
+      "sample_size": 534888,
+      "value": 0.08320809857936085
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "3f2a9a66cd4fc34cafd434a0cb5650ff62a01191f086bf42499c5a92e706b69b",
+      "metric": "dependency.rating_within_game_response",
+      "sample_size": 455316,
+      "value": 0.05211476057278656
+    }
+  ],
+  "recorded_at": "2026-10-21T08:03:36.386913Z",
+  "result_id": "3924573d64448c7b"
+}

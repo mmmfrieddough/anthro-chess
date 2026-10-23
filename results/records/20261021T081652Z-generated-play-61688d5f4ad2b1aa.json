@@ -1,0 +1,124 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "generated-play-rollout",
+    "version": 1
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "model.run_path=\"arm-495-combined\"",
+      "model.checkpoint=\"step-00069465.pt\""
+    ],
+    "sha256": "e908084f3e0ac627cfaee48a402e5e8db976532b8f9f7775532e007f9bb90aef",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/evaluation/generated-play-rollout.toml"
+  },
+  "data": null,
+  "detail": {
+    "bytes": 7108,
+    "description": "Opening divergence by depth: standard-start temperature=0.7",
+    "path": "generated-play/arm-495-combined-step-00069465/20261021T081652Z-standard-start-divergence-t0_7.json",
+    "sha256": "a3fb8cbb447ec525b956cb01a3d29d932487b03eb5ced5b3907a0d602c642282"
+  },
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": {
+    "coordinates": {},
+    "cpu_threads": null,
+    "device": "cuda",
+    "device_name": "NVIDIA GeForce RTX 4090",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "platform_key": "Linux-x86_64",
+    "precision": "float32-matmul-high",
+    "torch_version": "2.13.0+cu130",
+    "workload": {
+      "claim_draws": false,
+      "curve_neighbours": {
+        "book-available-depth": 1024,
+        "book-consumed-fraction": 1024,
+        "book-depth": 1024,
+        "cycle": 1024,
+        "game-length": 1024,
+        "move-diversity": 1024,
+        "repertoire": 1024,
+        "repetition": 1024,
+        "result": 1024,
+        "termination": 1024,
+        "waypoint": 1024
+      },
+      "curve_spec_version": 1,
+      "divergence_maximum_ply": null,
+      "divergence_resamples": 64,
+      "draw_claim_enabled": true,
+      "generation_version": 1,
+      "maximum_generated_plies": 300,
+      "opening_level": "family",
+      "positions": {
+        "kind": "standard-start"
+      },
+      "reference": {
+        "game_ids_sha256": "070f1fbe5f48814b56c0894f118cad1852f9dce22a1ed05f4dc553f51d5e1b72",
+        "maximum_rating_gap": 200,
+        "view": "rollout-reference-12000"
+      },
+      "resignation_enabled": true,
+      "swap_colors": true,
+      "target_ratings": [
+        1100,
+        1300,
+        1500,
+        1700,
+        1900,
+        2100
+      ],
+      "temperature": 0.7,
+      "time_control": "180+0"
+    },
+    "workload_sha256": "c314e6c3895ddcce953c813b8f5d544c05c191a23ec6890fdb3a8ba3301fa453"
+  },
+  "kind": "generated-play",
+  "measurements": [
+    {
+      "dispersion": null,
+      "fingerprint": "0297d84693cedcdeb8492f6aa6573caa066d1de7cced6872ca5aa69f729471d4",
+      "metric": "generated_play.divergence_half_depth",
+      "sample_size": 15360,
+      "value": 1.0
+    }
+  ],
+  "recorded_at": "2026-10-21T08:16:52.807335Z",
+  "result_id": "61688d5f4ad2b1aa"
+}

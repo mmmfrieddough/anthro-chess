@@ -1,0 +1,81 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "game-termination",
+    "version": 2
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "model.run_path=\"arm-495-combined\"",
+      "model.checkpoint=\"step-00069465.pt\""
+    ],
+    "sha256": "e6e493cc5747ba0c684a723fb5bb79c9a513924728c2009347fb59134e8e01cb",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/evaluation/game-termination.toml"
+  },
+  "data": null,
+  "detail": null,
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": {
+    "coordinates": {},
+    "cpu_threads": null,
+    "device": "cuda",
+    "device_name": "NVIDIA GeForce RTX 4090",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "platform_key": "Linux-x86_64",
+    "precision": "float32-matmul-high",
+    "torch_version": "2.13.0+cu130",
+    "workload": {
+      "benchmark": "game-termination",
+      "benchmark_version": 2,
+      "configuration_sha256": "43c4b54a5871d7c955879a0ab301996609a8d4ffc91815211507038ecae7688b"
+    },
+    "workload_sha256": "4f753ff8d0ac5d169cd1ae0c78b1c5ec86cf2ba5b05082968263f37609b92076"
+  },
+  "kind": "benchmark-cost",
+  "measurements": [
+    {
+      "dispersion": null,
+      "fingerprint": "cc064b4812130fa7e585d24aef3eadd16e97c15a2caf8ab627c4ab75c3bb7569",
+      "metric": "benchmark.wall_clock_seconds",
+      "sample_size": null,
+      "value": 50.05507167300675
+    }
+  ],
+  "recorded_at": "2026-10-21T08:17:42.713292Z",
+  "result_id": "59c1fc4fae3f0fd5"
+}

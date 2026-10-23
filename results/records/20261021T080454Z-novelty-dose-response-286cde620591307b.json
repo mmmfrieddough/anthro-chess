@@ -1,0 +1,231 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "novelty-dose-response",
+    "version": 2
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "model.run_path=\"arm-495-combined\"",
+      "model.checkpoint=\"step-00069465.pt\""
+    ],
+    "sha256": "89aeb80060b8f8b2519bb4afb235014fb0e9e9468ea8e53baa7551832bc9eafd",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/evaluation/novelty-dose-response.toml"
+  },
+  "data": {
+    "components": [
+      {
+        "content_sha256": "6eae811b0d795f1ed6b98d790697f7ad7c7d38dc1668eb46cb26ed1c885a0823",
+        "games": 6400,
+        "projection": "move_prediction",
+        "projection_version": 1
+      }
+    ],
+    "game_ids_sha256": "1b2c583bb3009412503cc1276bd02acbbff4bbeb8581cf001b48341203f9cbd0",
+    "pool_id": "lichess-univ-2018-01-2021-06-test",
+    "pool_version": 1,
+    "selected_games": 6400,
+    "view": "novelty-6400"
+  },
+  "detail": {
+    "bytes": 1705723,
+    "description": "Per-arm derivation provenance, phase counts, and material-gain band readings for one novelty dose.",
+    "path": "novelty-dose-response/arm-495-combined-step-00069465/20261021T080454Z-dose-0-2500.json",
+    "sha256": "8632915d3a0fcda2f6e9fa2dd99795d2bd894d2bad9413e79e9830688df57bee"
+  },
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": {
+    "coordinates": {},
+    "cpu_threads": null,
+    "device": "cuda",
+    "device_name": "NVIDIA GeForce RTX 4090",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "platform_key": "Linux-x86_64",
+    "precision": "float32-matmul-high",
+    "torch_version": "2.13.0+cu130",
+    "workload": {
+      "benchmark": "novelty-dose-response",
+      "benchmark_version": 2,
+      "dose": 0.25,
+      "onset_plies": 16,
+      "recipe": "random-legal-opponent",
+      "recipe_version": 1,
+      "seed": "anthro-novelty-v1",
+      "window_moves": 8
+    },
+    "workload_sha256": "46d78416305859df4ac99d50f3ddb896b60001d522e7e15ad2e425009379d4a0"
+  },
+  "kind": "novelty-dose-response",
+  "measurements": [
+    {
+      "dispersion": null,
+      "fingerprint": "b5f1249f6f6125df913ec368ba876b5ccb6567964db4e84faa65fca786737b19",
+      "metric": "novelty.derived_ply_retention",
+      "sample_size": 6156,
+      "value": 0.65337890625
+    },
+    {
+      "dispersion": {
+        "bound": 5.1955262421242824e-05,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 6156 derived game(s) at novelty dose 0.25",
+        "units": 6156,
+        "value": 5.1184125349245445e-05
+      },
+      "fingerprint": "ec6e962bd9115cc119ab40c15f41047414c042cf104ef61ca34003cf9f9eee95",
+      "metric": "novelty.mask_penalty",
+      "sample_size": 33453,
+      "value": 0.0008543909227945841
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "d093b20bce8deabef750ba7c873c511ee1c0fb5e758c59264b3f6e8e2fbd1d56",
+      "metric": "novelty.mask_penalty_delta",
+      "sample_size": 33453,
+      "value": 0.0003900765736806195
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "4906890590ebcc8063e90744b72b9763f8807c26a2ce048674422aba6323c1b1",
+      "metric": "novelty.material_gain_opportunity_share_minor",
+      "sample_size": 33453,
+      "value": 0.15532239261052821
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "7390f6282af5efb5cfeb5570ea7b4f728d307db864540d87c6d0c46fc5aeb64e",
+      "metric": "novelty.material_gain_opportunity_share_pawn",
+      "sample_size": 33453,
+      "value": 0.1774130870176068
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "a111eaa5a2803c7b6a3407d21f79f22fc6c23fe66d3e925cd91864cae7f38892",
+      "metric": "novelty.material_gain_opportunity_share_rook_or_better",
+      "sample_size": 33453,
+      "value": 0.1050727886886079
+    },
+    {
+      "dispersion": {
+        "bound": 0.005124361818122177,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 6156 derived game(s) at novelty dose 0.25",
+        "units": 2710,
+        "value": 0.005009652282477609
+      },
+      "fingerprint": "be65fc509eb4eacbb76f79da88c327e1ec55717523e6cf69e0787317ab910b01",
+      "metric": "novelty.material_gain_policy_mass_minor",
+      "sample_size": 5196,
+      "value": 0.6987763412591222
+    },
+    {
+      "dispersion": {
+        "bound": 0.005085286885509113,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 6156 derived game(s) at novelty dose 0.25",
+        "units": 3025,
+        "value": 0.004977553655118047
+      },
+      "fingerprint": "9125e0d269d9806e40c9c887f3847f14cda7e11a8ad39fcb64b1458ba22892b8",
+      "metric": "novelty.material_gain_policy_mass_pawn",
+      "sample_size": 5935,
+      "value": 0.5387403078633651
+    },
+    {
+      "dispersion": {
+        "bound": 0.006595521955349689,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 6156 derived game(s) at novelty dose 0.25",
+        "units": 1690,
+        "value": 0.0064084574250747
+      },
+      "fingerprint": "a151012a31fdb44ae4aa992a7f8255d438845eb8efe3d79a45846ac14cc53c22",
+      "metric": "novelty.material_gain_policy_mass_rook_or_better",
+      "sample_size": 3515,
+      "value": 0.6341177945414262
+    },
+    {
+      "dispersion": {
+        "bound": 0.0064771237222962345,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 6156 derived game(s) at novelty dose 0.25",
+        "units": 2710,
+        "value": 0.006332132427600872
+      },
+      "fingerprint": "b373c5c2749222db59c4eed17744c28666814628b85bbf5906de9b4d8a2489d0",
+      "metric": "novelty.material_gain_selected_rate_minor",
+      "sample_size": 5196,
+      "value": 0.8279445727482679
+    },
+    {
+      "dispersion": {
+        "bound": 0.007493060314585434,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 6156 derived game(s) at novelty dose 0.25",
+        "units": 3025,
+        "value": 0.007334317728104088
+      },
+      "fingerprint": "3e2f92269385f5cb38dd57c28f2e040ce02db851f319f1caadca5d77ced3aece",
+      "metric": "novelty.material_gain_selected_rate_pawn",
+      "sample_size": 5935,
+      "value": 0.685256950294861
+    },
+    {
+      "dispersion": {
+        "bound": 0.008506090078857003,
+        "estimator": "bootstrap-over-games",
+        "source": "bootstrap over 6156 derived game(s) at novelty dose 0.25",
+        "units": 1690,
+        "value": 0.008264837338611403
+      },
+      "fingerprint": "788ffc166bc41a8d3cbfcf4e51a0e40b8f09d4a38bc9a20eba7d73b9c9ef9a2d",
+      "metric": "novelty.material_gain_selected_rate_rook_or_better",
+      "sample_size": 3515,
+      "value": 0.813655761024182
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "62ed1dd724acd424585ff5939c3285233584df68f01849c197ca8139ba6a49b7",
+      "metric": "novelty.realized_dose",
+      "sample_size": 6156,
+      "value": 0.5382272800128226
+    }
+  ],
+  "recorded_at": "2026-10-21T08:04:54.164596Z",
+  "result_id": "286cde620591307b"
+}

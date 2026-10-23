@@ -34,6 +34,9 @@ record closes: the cards share the declared batch rather than adding to it.
 `docs/scaling.md` states the resulting rule and owns the program the vehicle
 serves.
 
+`0104-the-accepted-set-composes-and-the-ladder-reads-two-speeds.md` is the
+combined arm this record prices in, for the first accepted set.
+
 `0103-the-time-head-is-read-on-the-combined-arm.md` reads the last candidates
 before the target run on the combined arm rather than on the vehicle.
 

@@ -1,0 +1,257 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "generated-play-rollout",
+    "version": 1
+  },
+  "checkpoint": {
+    "label": "arm-495-combined-step-00069465",
+    "parameter_sha256": "febcb25a3b9c3c038456aba39cf11f4ddd9e7d3c1e37086eeeb0fe2d182bab36",
+    "run_id": "arm-495-combined",
+    "step": 69465,
+    "training_sha256": "c3e56eb6fd406a609b7596201fc7e20a899eae25b215896579938fd37d360c02"
+  },
+  "configuration": {
+    "overrides": [
+      "model.run_path=\"arm-495-combined\"",
+      "model.checkpoint=\"step-00069465.pt\""
+    ],
+    "sha256": "e908084f3e0ac627cfaee48a402e5e8db976532b8f9f7775532e007f9bb90aef",
+    "source": "/home/mmmfrieddough/anthro-chess-495/configs/evaluation/generated-play-rollout.toml"
+  },
+  "data": null,
+  "detail": {
+    "bytes": 2919550,
+    "description": "Generated-play rollout cell: standard-start rating=2100 temperature=1",
+    "path": "generated-play/arm-495-combined-step-00069465/20261021T081652Z-standard-start-r2100-t1_0.json",
+    "sha256": "9c3fd9cdb66d6272d5a666a9f43f6e1d0e3ddcc3198a833ce7f44d89a0cf6ace"
+  },
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4",
+    "version": 5
+  },
+  "envelope_version": 8,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "22f3687afd79837d2d8cd4c754104bdd86fd9963",
+    "package_version": "0.1.0",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "python_version": "3.13.14"
+  },
+  "execution": {
+    "coordinates": {},
+    "cpu_threads": null,
+    "device": "cuda",
+    "device_name": "NVIDIA GeForce RTX 4090",
+    "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+    "platform_key": "Linux-x86_64",
+    "precision": "float32-matmul-high",
+    "torch_version": "2.13.0+cu130",
+    "workload": {
+      "claim_draws": false,
+      "draw_claim_enabled": true,
+      "generation_version": 1,
+      "maximum_generated_plies": 300,
+      "opening_level": "family",
+      "positions": {
+        "kind": "standard-start"
+      },
+      "resignation_enabled": true,
+      "swap_colors": true,
+      "target_rating": 2100,
+      "temperature": 1.0,
+      "time_control": "180+0"
+    },
+    "workload_sha256": "275038abfaf43e509f9f617c91ba0554acd766dc447e650fa2bdbdf5ad781b80"
+  },
+  "kind": "generated-play",
+  "measurements": [
+    {
+      "dispersion": null,
+      "fingerprint": "58f7f65cda04ddf192b51856cc64c1ac0965c4a0786d9592f5b00b8c0400cba4",
+      "metric": "decision.departure_policy_regret",
+      "sample_size": 4206,
+      "value": 0.31052919657897093
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "35d6e371ec28b70dd63a0b9811a1f96d2468d33dddc3e948a16bae310775fd6c",
+      "metric": "decision.policy_regret",
+      "sample_size": 10098,
+      "value": 0.12934103790960108
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "cd7e6878b4712d22a1a03765a362734d9d8449d67fff6f0fbeedef930290c26e",
+      "metric": "decision.preferred_probability",
+      "sample_size": 10098,
+      "value": 0.5805834471329971
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "d00914fd9fe3a2dd73e961f3aaad29cfd1a658ced985d38e191039c269fee532",
+      "metric": "decision.preferred_selection_rate",
+      "sample_size": 10098,
+      "value": 0.5834818775995246
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "60e6989aec96b08588cada2f9e856080ed6a15c45fede37e3017332e899bb6b7",
+      "metric": "decision.selected_rank",
+      "sample_size": 10098,
+      "value": 2.236185383244207
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "3694c63bdbf8373c5f3b56a781b35094b630dbab3681fc5397e7e9d27440e165",
+      "metric": "generated_play.decisive_game_rate",
+      "sample_size": 2560,
+      "value": 0.9140625
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "a16053271f329ff096066f2a21b70034e40cbb81fa2dd8218149a69962d9864a",
+      "metric": "generated_play.distinct_game_fraction",
+      "sample_size": 2560,
+      "value": 1.0
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "3f466b8b00a78b508ff147cd270b8623a9dea38b58713c207c1e51366be3d463",
+      "metric": "generated_play.mean_available_ply",
+      "sample_size": 2559,
+      "value": 13.287612348573662
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "936759be1fcf5ead8d143b03113b46888115d7a9297a6300b8f1e028106412c6",
+      "metric": "generated_play.mean_book_ply",
+      "sample_size": 2559,
+      "value": 5.5670183665494335
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "8ae72719059572d541c7a278a35692b4c0f89ae65f6f76868eed464d0bcc0c98",
+      "metric": "generated_play.mean_consumed_fraction",
+      "sample_size": 2559,
+      "value": 0.5253206942473942
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "755e8d9d3e82725edd802b4098b33dfdd13a2abf35d6105cec152be04af75461",
+      "metric": "generated_play.mean_cycle_ply_fraction",
+      "sample_size": 290,
+      "value": 0.27610298024405755
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "d80cfef6a3aa98fbd5caec6f4aa6f17f3e52f77c9f3b1e4d2b5f28b68723e262",
+      "metric": "generated_play.mean_distinct_move_fraction",
+      "sample_size": 2560,
+      "value": 0.9653812550339567
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "3a95c6c75c17010b6aac28b5a9d066eed416f6311dd11e8ebfbaa413584b028f",
+      "metric": "generated_play.mean_first_repetition_ply",
+      "sample_size": 290,
+      "value": 91.75172413793103
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "5c1ba982861aac551cfc3b50fcc2382fe79b105d53c567e7592b17555e951819",
+      "metric": "generated_play.mean_game_plies",
+      "sample_size": 2560,
+      "value": 80.436328125
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "62a628087ade75327dc95088684dc80d94903d7511962cda69271e7e816c62d1",
+      "metric": "generated_play.mean_generated_plies",
+      "sample_size": 2560,
+      "value": 81.05234375
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "2ef9b61674a527390d7000fd60aa651d113f0af706057204d02faa2733493e77",
+      "metric": "generated_play.premature_resignation_rate",
+      "sample_size": 1498,
+      "value": 0.10747663551401869
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "221003b20802afa1707aae211ca5725d64f50aa75a5a650686b9ef069c4bd246",
+      "metric": "generated_play.repeated_position_game_rate",
+      "sample_size": 2560,
+      "value": 0.11328125
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "2f7c2779f912df89cc720e07f60f3095c9727c4d7d7a2bafd4e42853f3b8659d",
+      "metric": "generated_play.resignation_rate",
+      "sample_size": 2560,
+      "value": 0.58515625
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "0a16a932a568a1b8281bcbcbd3232285bbd4e67c4c9b67bd2863f93b7cca0ae9",
+      "metric": "generated_play.silent_terminal_actions",
+      "sample_size": 2560,
+      "value": 0.0
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "529bcc02aa567db622bd0d8f3033f149733211058bbf3d9f35c89e9d624fe239",
+      "metric": "generated_play.threefold_claimable_game_rate",
+      "sample_size": 2560,
+      "value": 0.034765625
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "00bb8c1de570e4975119f460aaf5c900094028f1d807419c8ca148b99b1ce5ec",
+      "metric": "generated_play.unfinished_game_rate",
+      "sample_size": 2560,
+      "value": 0.0
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "77f098ab66e5a0857a0bf497570282f9a3b92c3b62766596c88baa334d976b53",
+      "metric": "generated_play.untimed_non_termination_rate",
+      "sample_size": 2560,
+      "value": 0.0
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "70278b8a9c0038cff7ec3a29dacdc47f1d5ce7de262683a003d12df9e5f7ab88",
+      "metric": "generated_play.waypoint_game_rate",
+      "sample_size": 2560,
+      "value": 0.27421875
+    },
+    {
+      "dispersion": null,
+      "fingerprint": "faa1536792a1bb843d8de7840cd4ec483b026a3fbd66da3b9a8f40b97d6cf676",
+      "metric": "generated_play.white_score",
+      "sample_size": 2560,
+      "value": 0.51796875
+    }
+  ],
+  "recorded_at": "2026-10-21T08:16:52.807335Z",
+  "result_id": "a003415ee25196fd"
+}

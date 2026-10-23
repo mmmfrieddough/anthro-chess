@@ -8,6 +8,8 @@ Accepted. Answers `#583`. Settles for the ladder what
 `0072-the-clock-says-which-pool-a-rating-came-from.md` left open, and serves
 the declared-control context
 `0095-the-clock-enters-beside-the-rating-and-absence-is-trained.md` trained.
+Refined by `0104-the-accepted-set-composes-and-the-ladder-reads-two-speeds.md`,
+which adds the ladder's second speed this record left open.
 
 ## Context
 

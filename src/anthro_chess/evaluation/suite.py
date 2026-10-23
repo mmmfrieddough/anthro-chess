@@ -92,9 +92,14 @@ class SuiteBenchmarkConfig(ConfigModel):
 
     Everything about *how* the benchmark measures stays in its own selection
     file. What lives here is only what the file cannot know: where it sits in
-    the order and whether this sweep commits its reading.
+    the order, whether this sweep commits its reading, and what makes it a
+    variant when one benchmark runs as several steps.
     """
 
+    #: The registered benchmark this step runs, when the step is named
+    #: something else. One benchmark can then run as several steps, each under
+    #: its own overrides.
+    benchmark: str | None = None
     #: The benchmark's existing selection file. Absent only for a benchmark
     #: that reads another step's output rather than a configuration of its own.
     config: Path | None = None
@@ -106,6 +111,9 @@ class SuiteBenchmarkConfig(ConfigModel):
     #: some readings and leave the rest unrecorded, which is what a shakedown
     #: over most of the suite plus one kept baseline looks like.
     record: StrictBool = True
+    #: Overrides that make the step a different reading of its benchmark,
+    #: applied before ``overrides`` so that reading the step smaller keeps them.
+    variant: tuple[str, ...] = ()
     #: Dotted TOML overrides applied to the selection.
     overrides: tuple[str, ...] = ()
 
@@ -116,8 +124,9 @@ class SuiteConfig(CheckpointSelection):
     name: str = Field(
         default="checkpoint", min_length=1, pattern=r"^[a-z0-9][a-z0-9_-]*$"
     )
-    #: Keyed by benchmark name so one step can be adjusted from the command
-    #: line without restating the sweep.
+    #: Keyed by step name, which is the benchmark name unless the step says
+    #: otherwise, so one step can be adjusted from the command line without
+    #: restating the sweep.
     benchmarks: dict[str, SuiteBenchmarkConfig] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -282,7 +291,9 @@ def resolve_suite(
     entries = {
         name: entry for name, entry in config.benchmarks.items() if entry.enabled
     }
-    unknown = sorted(set(entries) - set(known))
+    unknown = sorted(
+        {entry.benchmark or name for name, entry in entries.items()} - set(known)
+    )
     if unknown:
         raise SuiteError(
             f"unknown benchmark(s) {', '.join(unknown)}; this build runs "
@@ -300,7 +311,7 @@ def resolve_suite(
     steps: list[PlannedBenchmark] = []
     for name in ordered:
         entry = entries[name]
-        benchmark = known[name]
+        benchmark = known[entry.benchmark or name]
         record = _step_records(
             name,
             entry,
@@ -317,6 +328,7 @@ def resolve_suite(
                 record=record,
                 source=entry.config,
                 overrides=(
+                    *entry.variant,
                     *entry.overrides,
                     *_checkpoint_overrides(config),
                 ),
@@ -571,7 +583,8 @@ def _order(
     """
 
     blockers = {
-        name: _blockers(name, entries[name], known[name], entries) for name in entries
+        name: _blockers(name, entry, known[entry.benchmark or name], entries)
+        for name, entry in entries.items()
     }
     remaining = list(entries)
     ordered: list[str] = []
@@ -643,7 +656,7 @@ def _resolve_benchmark(
     """Load one benchmark's own selection and point it at this checkpoint."""
 
     if benchmark.schema is None:
-        if entry.config is not None or entry.overrides:
+        if entry.config is not None or entry.variant or entry.overrides:
             raise SuiteError(
                 f"the {name} step reads another step's output, so it takes no "
                 "configuration file and no overrides of its own"
@@ -656,7 +669,7 @@ def _resolve_benchmark(
         resolved = resolve_benchmark(
             benchmark,
             path=entry.config,
-            overrides=entry.overrides,
+            overrides=(*entry.variant, *entry.overrides),
         )
     except ConfigError as error:
         raise SuiteError(f"the {name} step: {error}") from error
