@@ -53,7 +53,7 @@ from anthro_chess.evaluation.results import (
     configuration_reference,
     default_checkpoint_label,
 )
-from anthro_chess.models import MoveModel, MoveModelBatch
+from anthro_chess.models import MoveModel, MoveModelBatch, move_time_targets
 from anthro_chess.provenance import code_provenance
 from anthro_chess.training.cadence import (
     CadenceError,
@@ -106,6 +106,7 @@ from anthro_chess.training.efficiency import (
 from anthro_chess.training.health import StepHealth, StepHealthMonitor
 from anthro_chess.training.losses import (
     masked_action_cross_entropy,
+    masked_move_time_loss,
     masked_squared_log_partition,
 )
 from anthro_chess.training.retention import (
@@ -955,6 +956,7 @@ def _optimize(
     # Each rank takes an equal share of every step's micro-batches, so the
     # effective batch is the configured one however many ranks share it.
     local_accumulation = gradient_accumulation_steps // parallel.world_size
+    time_loss_weight = model.config.time_loss_weight if model.config.time_head else None
     training_sha256 = training_identity_sha256(compatibility)
     saved_checkpoint: Path | None = None
     saved_step = starting_step
@@ -1059,14 +1061,17 @@ def _optimize(
                     else nullcontext()
                 ):
                     with autocast:
-                        logits = trained(batch)
+                        if time_loss_weight is None:
+                            logits = trained(batch)
+                        else:
+                            logits, times = trained(batch, with_time=True)
                         loss = masked_action_cross_entropy(
                             logits,
                             batch.action_targets,
                             batch.action_loss_mask,
                         )
                         # The logged loss is the move loss alone, so it reads
-                        # the same with the penalty on or off.
+                        # the same with the penalty or the timing loss on.
                         objective = loss
                         if z_loss:
                             objective = (
@@ -1074,6 +1079,14 @@ def _optimize(
                                 + z_loss
                                 * masked_squared_log_partition(
                                     logits, batch.action_loss_mask
+                                )
+                            )
+                        if time_loss_weight is not None:
+                            objective = objective + time_loss_weight * (
+                                masked_move_time_loss(
+                                    times,
+                                    move_time_targets(batch),
+                                    batch.action_loss_mask,
                                 )
                             )
                     # Backward stays outside the autocast scope. Each

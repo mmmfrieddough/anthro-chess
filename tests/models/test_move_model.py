@@ -447,7 +447,13 @@ def test_the_identity_carries_every_value_needed_to_rebuild_the_model() -> None:
 
     assert config_record == config.model_dump(
         mode="json",
-        exclude={"clock_inputs", "clock_dropout", "query_key_normalization"},
+        exclude={
+            "clock_inputs",
+            "clock_dropout",
+            "query_key_normalization",
+            "time_head",
+            "time_loss_weight",
+        },
     )
     assert MoveModelConfig.model_validate(config_record) == config
     assert (

@@ -12,8 +12,10 @@ from anthro_chess.models.move_model import (
     MoveModel,
     RatingEmbedding,
     SourceDestinationHead,
+    move_time_targets,
     parameter_count,
 )
+from anthro_chess.models.timing import MoveTimeDistribution
 
 __all__ = [
     "STRONG_RATING_ANCHOR",
@@ -22,8 +24,10 @@ __all__ = [
     "MoveModelBatch",
     "MoveModelConfig",
     "MoveModelInputs",
+    "MoveTimeDistribution",
     "OptionalTensor",
     "RatingEmbedding",
     "SourceDestinationHead",
+    "move_time_targets",
     "parameter_count",
 ]

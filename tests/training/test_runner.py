@@ -30,6 +30,7 @@ from anthro_chess.evaluation.results import ResultsStore
 from anthro_chess.evaluation.results.budget import build_budget_report
 from anthro_chess.inference import CheckpointModelRunner, ModelRunnerConfig
 from anthro_chess.models import MoveModel, MoveModelBatch
+from anthro_chess.models.timing import INITIAL_LOCATION_RANGE, MOVE_TIME_COMPONENTS
 from anthro_chess.training import (
     CHECKPOINT_VERSION,
     RUN_ARTIFACT_VERSION,
@@ -638,6 +639,40 @@ def test_a_compiled_run_trains_and_reports_the_graphs_it_built(
     CheckpointModelRunner.load(
         ModelRunnerConfig(run_path=tmp_path / "run", device="cpu")
     )
+
+
+def test_a_compiled_run_trains_the_time_head_and_serves_it(tmp_path: Path) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    run_training(
+        load_config(
+            TrainingConfig,
+            path=_write_training_config(
+                tmp_path / "config",
+                normalized=prepared.normalized_path,
+                manifest=prepared.manifest_path,
+                run_name="run",
+                validation=False,
+                compilation="default",
+                model_extra="clock_inputs = true\ntime_head = true",
+            ),
+        ),
+        output_directory=tmp_path / "run",
+    )
+
+    runner = CheckpointModelRunner.load(
+        ModelRunnerConfig(run_path=tmp_path / "run", device="cpu")
+    )
+    head = runner.model.time_head
+    assert head is not None
+    readout = head.readout[-1]
+    assert isinstance(readout, torch.nn.Linear)
+    initial_locations = torch.linspace(*INITIAL_LOCATION_RANGE, MOVE_TIME_COMPONENTS)
+    trained_locations = readout.bias[MOVE_TIME_COMPONENTS : 2 * MOVE_TIME_COMPONENTS]
+    assert not torch.allclose(trained_locations, initial_locations)
 
 
 def test_resume_reads_execution_provenance_it_does_not_recognize(

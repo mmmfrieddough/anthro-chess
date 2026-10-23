@@ -92,6 +92,7 @@ class MoveModelBatch:
     game_ids: Tensor
     ply_indices: Tensor
     decision_columns: Tensor
+    target_clock_after_move_ms: OptionalTensor
 
     @property
     def history_floor(self) -> Tensor:
@@ -175,6 +176,10 @@ class MoveModelBatch:
             ply_indices=required(batch.ply_indices),
             decision_columns=_decision_columns(
                 batch.action_targets.shape, tensor_device
+            ),
+            target_clock_after_move_ms=optional(
+                batch.target_clock_after_move_ms.values,
+                batch.target_clock_after_move_ms.present,
             ),
         )
 
@@ -316,6 +321,10 @@ class MoveModelBatch:
             ),
             ply_indices=column(DecisionColumn.PLY_INDEX),
             decision_columns=_decision_columns((count, width), tensor_device),
+            target_clock_after_move_ms=OptionalTensor(
+                torch.zeros((count, width), dtype=torch.long, device=tensor_device),
+                torch.zeros((count, width), dtype=torch.bool, device=tensor_device),
+            ),
         )
         result.validate()
         return result
@@ -392,7 +401,11 @@ def _reject_invalid_batch(batch: _Batch) -> None:
     )
     if any(value.shape != expected_shape for value in aligned):
         raise ValueError("model inputs, targets, and masks must align")
-    nullable = (batch.inputs.target_rating, *_time_context(batch))
+    nullable = (
+        batch.inputs.target_rating,
+        *_time_context(batch),
+        batch.target_clock_after_move_ms,
+    )
     if any(
         value.values.shape != expected_shape or value.present.shape != expected_shape
         for value in nullable

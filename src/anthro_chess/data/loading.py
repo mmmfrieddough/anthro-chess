@@ -165,6 +165,7 @@ class SequenceBatch:
     legal_action_ids: LegalActionTensor | None
     game_ids: np.ndarray
     ply_indices: np.ndarray
+    target_clock_after_move_ms: OptionalIntBatch
 
     @property
     def batch_size(self) -> int:
@@ -865,6 +866,9 @@ def _collate_rows(
         ),
         game_ids=required(lambda ply: ply.game_id, np.uint64),
         ply_indices=required(lambda ply: ply.ply_index, np.int16),
+        target_clock_after_move_ms=optional(
+            lambda ply: ply.target_clock_after_move_ms, np.int32
+        ),
     )
 
 
