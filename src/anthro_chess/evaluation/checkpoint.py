@@ -124,6 +124,7 @@ from anthro_chess.evaluation.results.metrics import (
     DEPENDENCY_RATING_CROSS_CONDITIONING_PENALTY,
     DEPENDENCY_RATING_WITHIN_GAME_RESPONSE,
     MOVE_PREDICTION_PROJECTION,
+    MOVE_TIMING_PROJECTION,
 )
 from anthro_chess.evaluation.results.noise import NoiseCharacterizationError
 from anthro_chess.evaluation.scoring import (
@@ -139,6 +140,11 @@ from anthro_chess.evaluation.scoring import (
 )
 from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.evaluation.slices import SLICE_SCHEME_VERSION
+from anthro_chess.evaluation.timing import (
+    TimingAccumulator,
+    TimingColumns,
+    timing_columns,
+)
 from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
 from anthro_chess.inference import CheckpointModelRunner
 from anthro_chess.inference.runner import ModelRunnerError
@@ -155,9 +161,11 @@ ADJUDICATION_KIND = "adjudicated-decisions"
 HELD_OUT_BENCHMARK = BenchmarkReference(name="held-out-prediction", version=1)
 DEPENDENCY_BENCHMARK = BenchmarkReference(name="rating-dependency", version=1)
 ADJUDICATION_BENCHMARK = BenchmarkReference(name="adjudicated-decisions", version=1)
-#: One invocation produces two readings, and its cost belongs to neither: the
-#: scoring pass and the adjudication both happen once. The cost record names
-#: the whole evaluation instead.
+TIMING_KIND = "move-timing"
+TIMING_BENCHMARK = BenchmarkReference(name="move-timing", version=1)
+#: One invocation produces two readings, three for a model that writes time,
+#: and its cost belongs to none of them: the scoring pass and the adjudication
+#: both happen once. The cost record names the whole evaluation instead.
 CHECKPOINT_COST_BENCHMARK = BenchmarkReference(
     name="checkpoint-evaluation",
     version=CHECKPOINT_EVALUATION_VERSION,
@@ -453,6 +461,7 @@ class _BatchScores:
     corrupted: Mapping[str, tuple[Conditioning, tuple[float, ...]]]
     conditioned: Mapping[int, tuple[float, ...]]
     trajectory: TrajectoryColumns | None
+    timing: TimingColumns | None
 
 
 class _BatchSession:
@@ -466,16 +475,21 @@ class _BatchSession:
         runner: CheckpointModelRunner,
         config: DependencyTestConfig | None,
         shuffled: _ShuffledRatings | None,
+        timed: bool,
     ) -> None:
         self._runner = runner
         self._config = config
         self._shuffled = shuffled
+        self._timed = timed
 
     def score(self, inputs: ScoringInputs) -> _BatchScores:
         """Score one batch under every treatment the configuration asks for."""
 
         batch = self._batch(inputs)
-        logits = self._runner.action_logits(batch)
+        if self._timed:
+            logits, times = self._runner.timed_action_logits(batch)
+        else:
+            logits = self._runner.action_logits(batch)
         active = active_batch(logits, batch)
         if not active.legal_rows:
             raise CheckpointEvaluationError(
@@ -483,8 +497,15 @@ class _BatchSession:
             )
         positions = score_columns(active)
         adjudicated = score_action_sets(active, action_sets(inputs))
+        timing = None
+        if self._timed:
+            # Seeded by the batch's first game, so the draw does not depend on
+            # which device scored the batch or how many there were.
+            generator = torch.Generator(device=self._runner.device)
+            generator.manual_seed(active.game_ids[0] % 2**63)
+            timing = timing_columns(batch, active, times, inputs.slices, generator)
         if self._shuffled is None or self._config is None:
-            return _BatchScores(inputs, positions, adjudicated, {}, {}, None)
+            return _BatchScores(inputs, positions, adjudicated, {}, {}, None, timing)
 
         corrupted: dict[str, tuple[Conditioning, tuple[float, ...]]] = {}
         for conditioning in (
@@ -518,7 +539,7 @@ class _BatchSession:
                 batch, _constant_conditioning(value), active
             )
         return _BatchScores(
-            inputs, positions, adjudicated, corrupted, conditioned, trajectory
+            inputs, positions, adjudicated, corrupted, conditioned, trajectory, timing
         )
 
     def _treatment(
@@ -630,6 +651,7 @@ class _Measured:
     slices: SliceTable
     adjudication: AdjudicationReport | None
     dependency: DependencyTestResult | None
+    timing: TimingAccumulator | None
     game_totals: tuple[GameTotals, ...]
     positions: tuple[PositionPolicy, ...] | None
 
@@ -704,6 +726,7 @@ def evaluate_checkpoint(
             conditioning=None,
             adjudicate=True,
             per_position=config.detail.per_position,
+            timed=runner.model.time_head is not None,
         )
     except (DataLoadingError, DependencyError, ScoringError, ValueError) as error:
         if isinstance(error, CheckpointEvaluationError):
@@ -767,6 +790,27 @@ def evaluate_checkpoint(
                 "drill-down and opportunity counts."
             ),
             data=data,
+        )
+    if measured.timing is not None:
+        timing_component = projection_content_digest(
+            reading.projected_rows(),
+            MOVE_TIMING_PROJECTION,
+        )
+        recorder.add(
+            measured.timing.measurements(timing_component),
+            kind=TIMING_KIND,
+            benchmark=TIMING_BENCHMARK,
+            payload=measured.timing.as_record,
+            description=(
+                "Per-slice move-time loss, its matched marginal, and the "
+                "human and sampled move-time quantiles."
+            ),
+            data=pool_dataset_reference(
+                reading.pool,
+                reading.selection,
+                timing_component,
+                error=CheckpointEvaluationError,
+            ),
         )
     return result
 
@@ -878,6 +922,7 @@ def _score(
     conditioning: DependencyTestConfig | None,
     adjudicate: bool,
     per_position: bool,
+    timed: bool = False,
 ) -> _Measured:
     """Score every batch of the view, keeping only what outlives its batch.
 
@@ -894,8 +939,10 @@ def _score(
         if conditioning is not None
         else None,
         config.devices,
+        timed=timed,
     )
     aggregator = SliceAggregator()
+    timing = TimingAccumulator() if timed else None
     adjudication = (
         AdjudicationAccumulator(retain_positions=per_position) if adjudicate else None
     )
@@ -924,6 +971,8 @@ def _score(
             )
         if retained is not None:
             retained.extend(position_records(scores.positions))
+        if timing is not None and scores.timing is not None:
+            timing.add(scores.timing)
 
     report = None if adjudication is None else adjudication.report()
     result = None
@@ -940,6 +989,7 @@ def _score(
         slices=aggregator.compute(),
         adjudication=report,
         dependency=result,
+        timing=timing,
         game_totals=(
             merge_game_totals(
                 tuple(totals),
@@ -1010,6 +1060,8 @@ def _sessions(
     config: DependencyTestConfig | None,
     shuffled: _ShuffledRatings | None,
     requested: int | Literal["all"],
+    *,
+    timed: bool,
 ) -> tuple[_BatchSession, ...]:
     """Return one scoring session per accelerator this pass was given.
 
@@ -1022,7 +1074,7 @@ def _sessions(
     """
 
     if runner.device.type != "cuda":
-        return (_BatchSession(runner, config, shuffled),)
+        return (_BatchSession(runner, config, shuffled, timed),)
     available = torch.cuda.device_count()
     devices = available if requested == "all" else min(requested, available)
     if devices > 1:
@@ -1034,7 +1086,9 @@ def _sessions(
             for index in range(1, devices)
         ),
     )
-    return tuple(_BatchSession(replica, config, shuffled) for replica in replicas)
+    return tuple(
+        _BatchSession(replica, config, shuffled, timed) for replica in replicas
+    )
 
 
 def _scored_batches(

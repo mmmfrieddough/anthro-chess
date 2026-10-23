@@ -1132,10 +1132,6 @@ def test_the_default_text_view_stays_readable(
 
     assert "held_out.move_loss" in rendered
     assert "legality" in rendered
-    # A family still awaiting its first metric is named rather than dropped,
-    # but collapsed onto one wrapped line so registering families ahead of
-    # their benchmarks cannot grow the default view.
-    assert "awaiting a first metric:" in rendered
     assert "rating-behavior" in rendered
     # An absence that is about this checkpoint rather than about the plan keeps
     # its own line, because it is the actionable one.
@@ -1144,13 +1140,13 @@ def test_the_default_text_view_stays_readable(
     # A ratchet rather than a round number: it is the current height, so a
     # change that grows the default view has to be a deliberate one. Two lines
     # each belong to benchmark cost, decision decomposition, the puzzle-backed
-    # rating family, generated play, game termination, novelty, and training
-    # efficiency, which have metrics but no result in this fixture; a family
+    # rating family, generated play, game termination, novelty, timing, and
+    # training efficiency, which have metrics but no result in this fixture; a family
     # gets its own actionable absence section as soon as it has a metric to be
     # absent. Two further lines state the training identity and what the
     # baseline's recorded seed spread does here, both headers rather than
     # per-row annotations for exactly this reason.
-    assert len(rendered.splitlines()) <= 37
+    assert len(rendered.splitlines()) <= 38
 
 
 def _width_report(*identifiers: str) -> DeltaReport:

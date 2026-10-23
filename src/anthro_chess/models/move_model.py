@@ -636,8 +636,7 @@ class MoveModel(nn.Module):
             return self.decide(batch, batch.decision_columns)
         if self.time_head is None:
             raise ValueError("this model has no time head")
-        squares = self.encode(batch, batch.decision_columns)
-        black = _at_decision(batch.inputs.side_to_move, batch.decision_columns).bool()
+        squares, black = self.encode_decisions(batch)
         return (
             cast(Tensor, self.action_head(squares, black)),
             cast(Tensor, self.time_head(squares, black, batch.action_targets)),
@@ -659,6 +658,17 @@ class MoveModel(nn.Module):
         squares = self.encode(batch, decisions)
         black = _at_decision(batch.inputs.side_to_move, decisions).bool()
         return cast(Tensor, self.action_head(squares, black))
+
+    def encode_decisions(self, batch: MoveModelBatch) -> tuple[Tensor, Tensor]:
+        """Return every timestep's final square tokens and whether black moves.
+
+        What both heads read, for a caller that reads both off one pass.
+        """
+
+        squares = self.encode(batch, batch.decision_columns)
+        return squares, _at_decision(
+            batch.inputs.side_to_move, batch.decision_columns
+        ).bool()
 
     def encode(self, batch: MoveModelBatch, decisions: Tensor) -> Tensor:
         """Encode the named decisions' squares, each reading its own history."""

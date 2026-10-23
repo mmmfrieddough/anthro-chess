@@ -734,8 +734,9 @@ timing shape before restoring weights. The runner loads checkpoints through CPU
 storage, places the model on the resolved device, recomputes the full
 target-free history for each request, and exposes only the current decision's
 detached CPU action logits. It does not import training-loop orchestration,
-invent an opponent rating, add a cache, mask actions, sample moves, or expose a
-timing output.
+invent an opponent rating, add a cache, mask actions, or sample moves. Serving
+exposes no timing output; an offline reading of a checkpoint with a time head
+can ask it for the move-time distribution of any chosen move.
 
 Machine-local retention is not a release. Publishing selected inference
 artifacts through Hugging Face or another registry remains a later decision

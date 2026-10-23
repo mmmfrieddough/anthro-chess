@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,7 +23,12 @@ from anthro_chess.inference.selection import (
     ResolvedModelSelection,
     resolve_model_selection,
 )
-from anthro_chess.models import MoveModel, MoveModelBatch, MoveModelConfig
+from anthro_chess.models import (
+    MoveModel,
+    MoveModelBatch,
+    MoveModelConfig,
+    MoveTimeDistribution,
+)
 from anthro_chess.models.move_model import model_identity
 from anthro_chess.training.checkpoints import (
     CheckpointError,
@@ -262,6 +267,34 @@ class CheckpointModelRunner:
         if logits.shape != expected:
             raise ModelRunnerError("model returned an invalid action-logit shape")
         return cast(Tensor, logits.detach().to(dtype=torch.float32).clone())
+
+    def timed_action_logits(
+        self, batch: MoveModelBatch
+    ) -> tuple[Tensor, Callable[[Tensor], MoveTimeDistribution]]:
+        """Return raw action logits and a reader of any chosen move's time.
+
+        One trunk pass serves both, so a benchmark that times the human's move
+        and a sampled one pays for the board once. The reader takes one action
+        per timestep, shaped like the batch's targets.
+        """
+
+        head = self._model.time_head
+        if head is None:
+            raise ModelRunnerError("this checkpoint writes no move time")
+        try:
+            with _serving_arithmetic(), torch.inference_mode():
+                squares, black = self._model.encode_decisions(batch)
+                logits = self._model.action_head(squares, black)
+        except (RuntimeError, ValueError) as error:
+            raise ModelRunnerError(f"model inference failed: {error}") from error
+
+        def times(actions: Tensor) -> MoveTimeDistribution:
+            with _serving_arithmetic(), torch.inference_mode():
+                return MoveTimeDistribution.from_parameters(
+                    head(squares, black, actions)
+                )
+
+        return cast(Tensor, logits.detach().to(dtype=torch.float32).clone()), times
 
     def predict(self, context: DecisionContext) -> Tensor:
         """Return current-decision raw action logits on CPU."""
