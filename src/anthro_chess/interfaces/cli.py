@@ -2247,6 +2247,18 @@ def _render_evaluation(result: CheckpointEvaluationResult) -> str:
             f"  {name:<12} mask_penalty={summary.mask_penalty:.6f} "
             f"move_loss={summary.move_loss:.6f} n={summary.position_count}"
         )
+    if result.timing is not None:
+        lines.extend(
+            ["", "Move time (loss, marginal, distance, median human/sampled):"]
+        )
+        for name, reading in result.timing["slices"].items():
+            lines.append(
+                f"  {name:<18} loss={reading['move_time_loss']:.4f} "
+                f"marginal={reading['marginal_move_time_loss']:.4f} "
+                f"distance={reading['move_time_distance']:.4f} "
+                f"median={reading['human_ms']['p50']}/"
+                f"{reading['sampled_ms']['p50']}ms n={reading['moves']}"
+            )
     if result.dispersions:
         lines.extend(
             [

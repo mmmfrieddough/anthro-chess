@@ -283,7 +283,9 @@ class CheckpointModelRunner:
             raise ModelRunnerError("this checkpoint writes no move time")
         try:
             with _serving_arithmetic(), torch.inference_mode():
-                squares, black = self._model.encode_decisions(batch)
+                squares, black = self._model.encode_decisions(
+                    batch, batch.decision_columns
+                )
                 logits = self._model.action_head(squares, black)
         except (RuntimeError, ValueError) as error:
             raise ModelRunnerError(f"model inference failed: {error}") from error

@@ -934,14 +934,10 @@ HELD_OUT_MOVE_LOSS_BY_CLOCK_PRESSURE: Mapping[str, MetricDefinition] = {
     for pressure in CLOCK_PRESSURE_SLICE_NAMES
 }
 
-#: The slices a move time can be read in. A correspondence or untimed game,
-#: and a decision whose clock is unknown, records no move time.
+#: The slices a move time can be read in. An untimed game, and a decision whose
+#: clock is unknown, records no move time.
 TIMED_SLICE_NAMES: tuple[str, ...] = (
-    *(
-        speed
-        for speed in SPEED_SLICE_NAMES
-        if speed not in ("correspondence", "untimed")
-    ),
+    *(speed for speed in SPEED_SLICE_NAMES if speed != "untimed"),
     *(pressure for pressure in CLOCK_PRESSURE_SLICE_NAMES if pressure != "unclocked"),
 )
 

@@ -34,7 +34,6 @@ def _columns(
         human_ms=np.array(human_ms, dtype=np.int64),
         sampled_ms=np.array(sampled_ms, dtype=np.int64),
         loss=np.full(count, 2.0),
-        slices=((speed, clock),) * count,
         cells=(("1200_to_1599", speed, clock, "middlegame"),) * count,
     )
 

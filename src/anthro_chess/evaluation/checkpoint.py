@@ -276,6 +276,8 @@ class CheckpointEvaluationResult:
     dispersions: Mapping[str, MetricDispersion]
     opening_frequency: OpeningFrequency | None = None
     opening_tail: OpeningTailReading | None = None
+    #: The move-time readings, for a checkpoint with a time head.
+    timing: Mapping[str, Any] | None = None
     envelopes: tuple[ResultEnvelope, ...] = ()
     recorded_paths: tuple[Path, ...] = ()
     detail_paths: tuple[Path, ...] = ()
@@ -307,6 +309,7 @@ class CheckpointEvaluationResult:
             "opening_tail": (
                 None if self.opening_tail is None else self.opening_tail.as_record()
             ),
+            "timing": self.timing,
             "recorded": [str(path) for path in self.recorded_paths],
         }
 
@@ -500,7 +503,8 @@ class _BatchSession:
         timing = None
         if self._timed:
             # Seeded by the batch's first game, so the draw does not depend on
-            # which device scored the batch or how many there were.
+            # which accelerator scored the batch or how many there were. A CPU
+            # pass draws a different stream.
             generator = torch.Generator(device=self._runner.device)
             generator.manual_seed(active.game_ids[0] % 2**63)
             timing = timing_columns(batch, active, times, inputs.slices, generator)
@@ -765,6 +769,7 @@ def evaluate_checkpoint(
         dispersions=dispersions,
         opening_frequency=frequency,
         opening_tail=opening_tail,
+        timing=None if measured.timing is None else measured.timing.as_record(),
     )
     recorder.add(
         slice_measurements(measured.slices, component),
@@ -800,7 +805,7 @@ def evaluate_checkpoint(
             measured.timing.measurements(timing_component),
             kind=TIMING_KIND,
             benchmark=TIMING_BENCHMARK,
-            payload=measured.timing.as_record,
+            payload=lambda: dict(result.timing or {}),
             description=(
                 "Per-slice move-time loss, its matched marginal, and the "
                 "human and sampled move-time quantiles."

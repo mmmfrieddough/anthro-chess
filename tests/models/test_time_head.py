@@ -11,7 +11,7 @@ import pytest
 import torch
 from tiny_models import tiny_model_config
 
-from anthro_chess.chess import encode_move
+from anthro_chess.chess import RESIGNATION_ACTION_ID, encode_move
 from anthro_chess.data import (
     GameEncodingInput,
     SequenceExample,
@@ -42,13 +42,15 @@ def _batch(
     initial_ms: int | None = _INITIAL_MS,
     increment_ms: int | None = _INCREMENT_MS,
     clocks_ms: Sequence[int | None] = _CLOCKS_MS,
+    resigns: bool = False,
 ) -> MoveModelBatch:
+    moves = tuple(encode_move(chess.Move.from_uci(m)) for m in _MOVES)
     plies = encode_game(
         GameEncodingInput(
             game_id=7,
             ruleset="standard",
             initial_position=chess.STARTING_FEN,
-            action_ids=tuple(encode_move(chess.Move.from_uci(m)) for m in _MOVES),
+            action_ids=(*moves, RESIGNATION_ACTION_ID) if resigns else moves,
             white_normalized_rating=1500,
             black_normalized_rating=1500,
             time_initial_ms=initial_ms,
@@ -121,6 +123,14 @@ def test_a_move_time_is_the_clock_it_spent_and_the_first_two_plies_have_none() -
     assert targets.values[0, 2:].tolist() == [4_000, 1_000, 5_000]
 
 
+def test_a_missing_clock_and_a_resignation_have_no_move_time() -> None:
+    clocks = (*_CLOCKS_MS[:3], None, _CLOCKS_MS[4], None)
+
+    targets = move_time_targets(_batch(clocks_ms=clocks, resigns=True))
+
+    assert targets.present.tolist() == [[False, False, True, False, True, False]]
+
+
 def test_an_untimed_game_has_no_move_times() -> None:
     targets = move_time_targets(
         _batch(initial_ms=None, increment_ms=None, clocks_ms=(None,) * len(_MOVES))
@@ -158,8 +168,7 @@ def test_the_time_head_reads_the_chosen_move_and_trains_the_trunk() -> None:
     assert trunk is not None and trunk.abs().sum() > 0
 
     model.eval()
-    squares = model.encode(batch, batch.decision_columns)
-    black = batch.inputs.side_to_move.bool()
+    squares, black = model.encode_decisions(batch, batch.decision_columns)
     other = torch.full_like(
         batch.action_targets, encode_move(chess.Move.from_uci("a2a3"))
     )
