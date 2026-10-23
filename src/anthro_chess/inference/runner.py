@@ -273,9 +273,9 @@ class CheckpointModelRunner:
     ) -> tuple[Tensor, Callable[[Tensor], MoveTimeDistribution]]:
         """Return raw action logits and a reader of any chosen move's time.
 
-        One trunk pass serves both, so a benchmark that times the human's move
-        and a sampled one pays for the board once. The reader takes one action
-        per timestep, shaped like the batch's targets.
+        One trunk pass serves both, and the reader can time several choices of
+        move without encoding the board again. It takes one action per
+        timestep, shaped like the batch's targets.
         """
 
         head = self._model.time_head

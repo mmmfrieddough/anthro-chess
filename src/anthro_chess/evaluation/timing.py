@@ -1,12 +1,9 @@
 """Held-out move-time readings, taken beside move prediction in one pass.
 
-Every reading is over decisions whose time the clock recorded, and each is
-reported overall and per speed and per clock bucket. Both the marginal and the
-distance are taken within cells of one rating band, speed, clock bucket and
-phase, and a slice reads its cells weighted by how many moves each holds.
-Distances are measured in
-``log(1 + ms)``, the space the time head writes in, where a second's error on a
-two-second move and a minute's on a two-minute think weigh alike.
+The marginal and the distance are taken within matched cells, and a slice reads
+its cells weighted by their moves. Distances are in ``log(1 + ms)``, where a
+second's error on a two-second move and a minute's on a two-minute think weigh
+alike.
 """
 
 from __future__ import annotations
@@ -47,6 +44,9 @@ DISTANCE_BIN_WIDTH = 0.01
 
 _OVERALL = ""
 
+#: Rating band, speed, clock bucket, and phase: what a comparison matches.
+Cell = tuple[str, str | None, str, str]
+
 
 @dataclass(frozen=True)
 class TimingColumns:
@@ -55,8 +55,7 @@ class TimingColumns:
     human_ms: NDArray[np.int64]
     sampled_ms: NDArray[np.int64]
     loss: NDArray[np.float64]
-    #: Rating band, speed, clock bucket, and phase: what a comparison matches.
-    cells: tuple[tuple[str, str, str, str], ...]
+    cells: tuple[Cell, ...]
 
 
 def timing_columns(
@@ -68,10 +67,9 @@ def timing_columns(
 ) -> TimingColumns:
     """Score the human's move time and sample one after a sampled legal move.
 
-    The move is drawn from the legal policy at temperature one, which is what
-    a player meets, and the time is drawn after it, as the runtime would.
-    Resigning or claiming a draw ends the game rather than spending time on a
-    move, so the draw is over moves alone.
+    The move is drawn from the legal policy at temperature one, and the time is
+    drawn given that move. Resigning or claiming a draw records no move time,
+    so only moves are sampled.
     """
 
     mask = batch.action_loss_mask
@@ -113,7 +111,7 @@ def timing_columns(
         cells=tuple(
             (
                 str(item.rating_band),
-                str(item.speed),
+                None if item.speed is None else str(item.speed),
                 str(item.clock_pressure),
                 str(item.phase),
             )
@@ -128,13 +126,9 @@ class TimingAccumulator:
 
     _loss: defaultdict[str, float] = field(default_factory=lambda: defaultdict(float))
     _count: Counter[str] = field(default_factory=Counter)
-    _marginal: dict[tuple[str, str, str, str], Counter[int]] = field(
-        default_factory=dict
-    )
-    _human: dict[tuple[str, str, str, str], Counter[int]] = field(default_factory=dict)
-    _sampled: dict[tuple[str, str, str, str], Counter[int]] = field(
-        default_factory=dict
-    )
+    _marginal: dict[Cell, Counter[int]] = field(default_factory=dict)
+    _human: dict[Cell, Counter[int]] = field(default_factory=dict)
+    _sampled: dict[Cell, Counter[int]] = field(default_factory=dict)
 
     def add(self, columns: TimingColumns) -> None:
         """Fold one batch in."""
@@ -257,11 +251,11 @@ def _active(distribution: MoveTimeDistribution, mask: Tensor) -> MoveTimeDistrib
     )
 
 
-def _slices_of(cell: tuple[str, str, str, str]) -> tuple[str, str, str]:
+def _slices_of(cell: Cell) -> tuple[str, ...]:
     """Return the readings a cell counts toward: overall, its speed, its clock."""
 
     _, speed, clock, _ = cell
-    return (_OVERALL, speed, clock)
+    return (_OVERALL, clock) if speed is None else (_OVERALL, speed, clock)
 
 
 def _recorded_times_in(bin_index: int) -> int:
@@ -277,7 +271,6 @@ def _recorded_times_in(bin_index: int) -> int:
     )
 
 
-#: The quantiles a record reports of each move-time distribution.
 _QUANTILES = (0.1, 0.25, 0.5, 0.75, 0.9)
 
 

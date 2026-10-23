@@ -569,6 +569,7 @@ class MoveTimeHead(nn.Module):
     ) -> Tensor:
         """Return the raw mixture parameters for each decision's action."""
 
+        # Actions name squares in the board's frame; the tokens are in the mover's.
         joined = self.action_squares[actions]
         joined = torch.where(
             black_to_move.unsqueeze(-1), self.mirrored_squares[joined], joined
@@ -629,7 +630,7 @@ class MoveModel(nn.Module):
         gathers by the loss mask before looking.
 
         ``with_time`` also returns the time head's raw output for each
-        timestep's target action, which is what training scores.
+        timestep's target action.
         """
 
         if not with_time:
@@ -662,7 +663,7 @@ class MoveModel(nn.Module):
     ) -> tuple[Tensor, Tensor]:
         """Return the named decisions' final square tokens and whether black moves.
 
-        What both heads read, for a caller that reads both off one pass.
+        What both heads read.
         """
 
         squares = self.encode(batch, decisions)

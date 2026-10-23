@@ -2,7 +2,7 @@
 
 A mixture of logistics over ``log(1 + milliseconds)``. Human move times are
 multimodal, so one decision can put mass on an instant premove and on a long
-think at once. Decision 0105 records why this shape.
+think at once.
 """
 
 from __future__ import annotations
