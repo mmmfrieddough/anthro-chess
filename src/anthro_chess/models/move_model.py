@@ -388,11 +388,9 @@ class SpatialAttention(nn.Module):
         self.qkv_projection = nn.Linear(config.model_dim, 3 * config.model_dim)
         self.output_projection = nn.Linear(config.model_dim, config.model_dim)
         self.geometric_bias = GeometricAttentionBias(config)
-        self.query_norm: nn.Module = nn.Identity()
-        self.key_norm: nn.Module = nn.Identity()
-        if config.query_key_normalization:
-            self.query_norm = nn.RMSNorm(self.head_dim)
-            self.key_norm = nn.RMSNorm(self.head_dim)
+        normalized = config.query_key_normalization
+        self.query_norm = nn.RMSNorm(self.head_dim) if normalized else nn.Identity()
+        self.key_norm = nn.RMSNorm(self.head_dim) if normalized else nn.Identity()
         # ``nn.Linear``'s own default scales from fan-in alone, which reads this
         # fused weight as one projection rather than the three it fans out into.
         nn.init.xavier_uniform_(self.qkv_projection.weight)

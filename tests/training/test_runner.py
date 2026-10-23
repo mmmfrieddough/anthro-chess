@@ -1390,6 +1390,46 @@ def test_gradient_accumulation_uses_multiple_batches_per_optimizer_step(
     assert all(record["peak_allocated_memory_bytes"] is None for record in records)
 
 
+def test_the_log_partition_penalty_trains_without_entering_the_logged_loss(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    runs = []
+    for z_loss in (0.0, 1.0):
+        name = f"z{z_loss:g}"
+        config_path = _write_training_config(
+            tmp_path / name,
+            normalized=prepared.normalized_path,
+            manifest=prepared.manifest_path,
+            run_name=name,
+            validation=False,
+            extra=f"z_loss = {z_loss}\n",
+        )
+        runs.append(
+            run_training(
+                load_config(TrainingConfig, path=config_path),
+                output_directory=tmp_path / name / "run",
+            )
+        )
+
+    plain, penalized = (
+        _metric_records(result.metrics_path)[0]["move_loss"] for result in runs
+    )
+    assert plain == penalized
+    plain_state, penalized_state = (
+        load_training_checkpoint(result.checkpoint_path)["model_state"]
+        for result in runs
+    )
+    assert any(
+        not torch.equal(plain_state[name], penalized_state[name])
+        for name in plain_state
+    )
+
+
 def _rank_command(
     config: Path,
     output_directory: Path,

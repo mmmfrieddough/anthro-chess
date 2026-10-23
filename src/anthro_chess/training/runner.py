@@ -1066,17 +1066,17 @@ def _optimize(
                             batch.action_targets,
                             batch.action_loss_mask,
                         )
-                        # The logged loss stays the move loss alone, so it
-                        # reads the same with the penalty on or off.
-                        objective = (
-                            loss
-                            + z_loss
-                            * masked_squared_log_partition(
-                                logits, batch.action_loss_mask
+                        # The logged loss is the move loss alone, so it reads
+                        # the same with the penalty on or off.
+                        objective = loss
+                        if z_loss:
+                            objective = (
+                                objective
+                                + z_loss
+                                * masked_squared_log_partition(
+                                    logits, batch.action_loss_mask
+                                )
                             )
-                            if z_loss
-                            else loss
-                        )
                     # Backward stays outside the autocast scope. Each
                     # operation's backward already runs in the dtype its forward
                     # chose, and nesting it would autocast a second time.
