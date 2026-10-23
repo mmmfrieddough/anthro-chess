@@ -43,3 +43,11 @@ def masked_action_cross_entropy(
         supervised.reshape(-1),
         ignore_index=_IGNORE_INDEX,
     )
+
+
+def masked_squared_log_partition(logits: Tensor, loss_mask: Tensor) -> Tensor:
+    """Average squared log-partition over the same timesteps the loss reads."""
+
+    log_partition = torch.logsumexp(logits.float(), dim=-1)
+    enabled = loss_mask.to(log_partition.dtype)
+    return (log_partition.square() * enabled).sum() / enabled.sum()

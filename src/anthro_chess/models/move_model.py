@@ -388,6 +388,11 @@ class SpatialAttention(nn.Module):
         self.qkv_projection = nn.Linear(config.model_dim, 3 * config.model_dim)
         self.output_projection = nn.Linear(config.model_dim, config.model_dim)
         self.geometric_bias = GeometricAttentionBias(config)
+        self.query_norm: nn.Module = nn.Identity()
+        self.key_norm: nn.Module = nn.Identity()
+        if config.query_key_normalization:
+            self.query_norm = nn.RMSNorm(self.head_dim)
+            self.key_norm = nn.RMSNorm(self.head_dim)
         # ``nn.Linear``'s own default scales from fan-in alone, which reads this
         # fused weight as one projection rather than the three it fans out into.
         nn.init.xavier_uniform_(self.qkv_projection.weight)
@@ -404,8 +409,8 @@ class SpatialAttention(nn.Module):
             .unbind(0)
         )
         attended = F.scaled_dot_product_attention(
-            query,
-            key,
+            self.query_norm(query),
+            self.key_norm(key),
             value,
             dropout_p=self.dropout if self.training else 0.0,
             attn_mask=self.geometric_bias(hidden, templates).to(query.dtype),
@@ -618,16 +623,18 @@ def model_identity(config: MoveModelConfig) -> dict[str, object]:
     code would produce should not have to allocate a network to do it.
     """
 
+    excluded = set() if config.clock_inputs else set(_CLOCK_CONFIG_FIELDS)
+    # Left out while off, so every run recorded before it existed keeps its
+    # identity.
+    if not config.query_key_normalization:
+        excluded.add("query_key_normalization")
     return {
         "name": "anthro-move-model",
         # Version 7 is the architecture 0070 records: one decision per forward
         # pass, history stacked into the square tokens, and the board flipped to
         # the side to move. No version 6 checkpoint can be read.
         "version": 7,
-        "config": config.model_dump(
-            mode="json",
-            exclude=None if config.clock_inputs else set(_CLOCK_CONFIG_FIELDS),
-        ),
+        "config": config.model_dump(mode="json", exclude=excluded),
         "action_vocabulary": action_vocabulary_identity(),
         "encoding": encoding_identity(),
         "rating_conditioning": "square-token-input-embedding",

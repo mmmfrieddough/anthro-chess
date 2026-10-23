@@ -18,6 +18,7 @@ from anthro_chess.data import (
 )
 from anthro_chess.models import MoveModelBatch
 from anthro_chess.training import masked_action_cross_entropy
+from anthro_chess.training.losses import masked_squared_log_partition
 
 
 def test_action_loss_uses_only_explicitly_enabled_targets() -> None:
@@ -101,6 +102,33 @@ def test_a_terminal_target_is_supervised_like_any_other_action() -> None:
     # The terminal step contributes a gradient, so it is trained rather than
     # merely tolerated.
     assert torch.any(logits.grad[0, -1] != 0.0)
+
+
+def test_the_log_partition_penalty_reads_only_enabled_timesteps() -> None:
+    logits = torch.tensor(
+        [
+            [[2.0, 0.0, -1.0], [500.0, -100.0, -100.0]],
+            [[0.0, 2.0, -1.0], [-100.0, 500.0, -100.0]],
+        ]
+    )
+    mask = torch.tensor([[True, False], [True, False]])
+
+    penalty = masked_squared_log_partition(logits, mask)
+
+    expected = torch.logsumexp(logits[:, 0], dim=-1).square().mean()
+    torch.testing.assert_close(penalty, expected)
+
+
+def test_the_log_partition_penalty_pulls_a_shared_offset_toward_zero() -> None:
+    """The move loss cannot see an offset every logit shares; this can."""
+
+    logits = (torch.randn((1, 2, 5)) + 40.0).requires_grad_()
+    mask = torch.ones((1, 2), dtype=torch.bool)
+
+    masked_squared_log_partition(logits, mask).backward()
+
+    assert logits.grad is not None
+    assert torch.all(logits.grad.sum(dim=-1) > 0.0)
 
 
 def test_action_loss_rejects_misaligned_masks() -> None:

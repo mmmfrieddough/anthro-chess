@@ -93,6 +93,11 @@ class TrainingConfig(ConfigModel):
     #: the norms an ordinary step reaches, so it catches a spike rather than
     #: capping every step.
     gradient_clip_norm: float = Field(default=10.0, gt=0.0)
+    #: Weight of the squared log-partition added to the move loss. A softmax
+    #: ignores a constant shared by every logit, so nothing else stops that
+    #: constant drifting, and far enough from zero the bfloat16 logits it shifts
+    #: lose the precision that separates one move from the next.
+    z_loss: float = Field(default=0.0, ge=0.0)
     log_every_steps: int = Field(default=1, ge=1)
     #: How often a run saves, which bounds what stopping it loses.
     checkpoint_every_steps: int = Field(default=100, ge=1)
