@@ -14,6 +14,9 @@ Settles the second speed
 `0099-the-rating-benchmarks-declare-the-control-of-their-games.md` left to a
 clock-reading model's adoption.
 
+`0105-the-target-trains-with-query-key-normalization-and-a-log-partition-penalty.md` adds query-key normalization and a log-partition penalty to this set
+for the target run.
+
 ## Context
 
 Each candidate was read alone against the vehicle, which gives main effects and

@@ -43,6 +43,10 @@ class MoveModelConfig(ConfigModel):
     #: without the initial one. The corpus presents almost none of these on its
     #: own.
     clock_dropout: float = Field(default=0.05, ge=0.0, le=1.0)
+    #: Whether each head's queries and keys are RMS-normalized before their dot
+    #: product, which bounds an attention logit by the two learned gains rather
+    #: than by however far the projections have grown.
+    query_key_normalization: bool = False
 
     @model_validator(mode="after")
     def validate_attention_shape(self) -> MoveModelConfig:

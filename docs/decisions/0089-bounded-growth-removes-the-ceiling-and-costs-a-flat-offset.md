@@ -21,6 +21,9 @@ purpose. The vehicle does not adopt this, for the reason under **Decision**.
 runs no ladder, so the rungs the Consequences below place past the turnover were
 never trained.
 
+`0105-the-target-trains-with-query-key-normalization-and-a-log-partition-penalty.md` removes the turnover through step 347,200 without decay, with a
+penalty on the log-partition the undecayed trunks let drift.
+
 ## Context
 
 `0088` found that a width-128 run reaches its loss minimum near 222,000

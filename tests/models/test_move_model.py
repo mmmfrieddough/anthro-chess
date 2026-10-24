@@ -446,13 +446,41 @@ def test_the_identity_carries_every_value_needed_to_rebuild_the_model() -> None:
     config_record = MoveModel(config).identity()["config"]
 
     assert config_record == config.model_dump(
-        mode="json", exclude={"clock_inputs", "clock_dropout"}
+        mode="json",
+        exclude={"clock_inputs", "clock_dropout", "query_key_normalization"},
     )
     assert MoveModelConfig.model_validate(config_record) == config
     assert (
         MoveModel(_tiny_config(history_positions=4)).identity()
         != MoveModel(config).identity()
     )
+    normalized = _tiny_config(query_key_normalization=True)
+    assert (
+        MoveModelConfig.model_validate(MoveModel(normalized).identity()["config"])
+        == normalized
+    )
+
+
+def test_query_key_normalization_makes_attention_blind_to_projection_growth() -> None:
+    """Growth in the query and key projections is what saturates attention."""
+
+    torch.manual_seed(5)
+    batch = _batch_of_width(6)
+    outputs = []
+    for normalized in (False, True):
+        model = MoveModel(_tiny_config(query_key_normalization=normalized)).eval()
+        with torch.no_grad():
+            before = model(batch)
+            for block in model.blocks:
+                projection = cast(ResidualBlock, block).attention.qkv_projection
+                width = projection.out_features // 3
+                projection.weight[: 2 * width] *= 50.0
+                projection.bias[: 2 * width] *= 50.0
+            outputs.append((before, model(batch)))
+
+    (plain_before, plain_after), (normalized_before, normalized_after) = outputs
+    assert not torch.allclose(plain_before, plain_after, atol=1e-3)
+    torch.testing.assert_close(normalized_after, normalized_before)
 
 
 def test_future_context_does_not_change_earlier_predictions() -> None:
@@ -885,6 +913,7 @@ def _tiny_config(
     dropout: float = 0.0,
     history_positions: int = 3,
     history_dropout: float = 0.0,
+    query_key_normalization: bool = False,
 ) -> MoveModelConfig:
     """Return a model small enough to train in a test, and deterministic.
 
@@ -904,4 +933,5 @@ def _tiny_config(
         geometric_token_dim=4,
         geometric_bias_dim=8,
         dropout=dropout,
+        query_key_normalization=query_key_normalization,
     )

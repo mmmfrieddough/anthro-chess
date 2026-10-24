@@ -521,6 +521,15 @@ def test_the_training_identity_holds_everything_but_the_seed_and_a_branch(
     assert "weight_decay_exemption" in cast(Any, decayed["training_config"])
     assert "weight_decay_exemption" not in cast(Any, undecayed["training_config"])
 
+    # So does the log-partition penalty, and only where it is on.
+    penalized = compatibility_record(
+        config.model_copy(update={"z_loss": 1e-4}),
+        data=data,
+        model={"parameters": 276_002},
+    )
+    assert cast(Any, penalized["training_config"])["z_loss"] == 1e-4
+    assert "z_loss" not in cast(Any, undecayed["training_config"])
+
 
 def test_matmul_precision_is_applied_for_the_run_and_restored_after_it(
     tmp_path: Path,
@@ -1379,6 +1388,46 @@ def test_gradient_accumulation_uses_multiple_batches_per_optimizer_step(
     assert all(record["transfer_seconds"] >= 0.0 for record in records)
     assert all(record["compute_seconds"] >= 0.0 for record in records)
     assert all(record["peak_allocated_memory_bytes"] is None for record in records)
+
+
+def test_the_log_partition_penalty_trains_without_entering_the_logged_loss(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    runs = []
+    for z_loss in (0.0, 1.0):
+        name = f"z{z_loss:g}"
+        config_path = _write_training_config(
+            tmp_path / name,
+            normalized=prepared.normalized_path,
+            manifest=prepared.manifest_path,
+            run_name=name,
+            validation=False,
+            extra=f"z_loss = {z_loss}\n",
+        )
+        runs.append(
+            run_training(
+                load_config(TrainingConfig, path=config_path),
+                output_directory=tmp_path / name / "run",
+            )
+        )
+
+    plain, penalized = (
+        _metric_records(result.metrics_path)[0]["move_loss"] for result in runs
+    )
+    assert plain == penalized
+    plain_state, penalized_state = (
+        load_training_checkpoint(result.checkpoint_path)["model_state"]
+        for result in runs
+    )
+    assert any(
+        not torch.equal(plain_state[name], penalized_state[name])
+        for name in plain_state
+    )
 
 
 def _rank_command(
