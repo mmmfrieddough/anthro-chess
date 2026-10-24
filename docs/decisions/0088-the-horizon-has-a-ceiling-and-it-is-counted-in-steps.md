@@ -32,7 +32,8 @@ turnover as an observation at this width rather than a bound on others, and
 drops the ladder the Consequences below place against it.
 
 `0105-the-target-trains-with-query-key-normalization-and-a-log-partition-penalty.md` finds a log-partition drift that costs bfloat16 logits their precision
-coinciding with this turnover, and adds a penalty that holds it.
+coinciding with this turnover, and a trunk with a penalty holding it does not
+turn over through step 347,200.
 
 ## Context
 

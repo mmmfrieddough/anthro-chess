@@ -11,7 +11,10 @@ the target run only, and takes the one vehicle-scale reading
 
 Bears on `0088-the-horizon-has-a-ceiling-and-it-is-counted-in-steps.md`: the
 turnover it found coincides with a log-partition drift that costs bfloat16
-logits their precision, which this record measures.
+logits their precision, and a trunk with the penalty does not turn over through
+step 347,200. Bears on
+`0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md` for the
+same reason: decay is not the only setting that removes the ceiling.
 
 ## Context
 
@@ -36,7 +39,9 @@ every reading taken against it.
   action logits is added to the objective. It prevents the shared logit offset,
   which the cross-entropy cannot see, from drifting to magnitudes where
   bfloat16 logits quantize. Without it the offset passes -27 by step 166,656
-  at width 128, and the target runs about a million steps.
+  at width 128, and the target runs about a million steps. With it a width-128
+  trunk held the offset near -2.7 and was still improving at step 347,200,
+  where the same trunk without it had turned over.
 
 **Three are not.**
 
@@ -128,6 +133,29 @@ The drift is per step, at either rate. Training reads the bfloat16 loss, and
 the undecayed trunk's logged training loss rose by about 0.1 after step 223,000,
 the size of the cost in the last column.
 
+### The Penalty Over A Long Trunk
+
+`h499-zloss-trunk-0p003` is `0088`'s 3e-3 trunk, the vehicle's configuration
+declaring 2,222,080 steps, with `z_loss = 1e-4` and nothing else changed. It was
+stopped at step 347,200, the first point at which that trunk was clearly
+degraded. Pool loss is `held_out.move_loss` at view `canonical`, uncooled;
+log-partition and training loss are as above, the training loss and gradient
+norm averaged over the last three logged intervals.
+
+| step | pool loss, without | pool loss, with | log-partition, without | log-partition, with | training loss, without | training loss, with | gradient norm, without | gradient norm, with |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 111,104 | 1.4415 | 1.4423 | +1.6 | -2.4 | | | | |
+| 166,656 | 1.4378 | 1.4386 | -26.8 | -2.7 | 1.437 | 1.437 | 0.27 | 0.27 |
+| 222,208 | 1.4372 | 1.4351 | -95.7 | -2.7 | 1.462 | 1.438 | 0.41 | 0.26 |
+| 277,760 | 1.4398 | 1.4363 | -241.6 | -2.6 | 1.502 | 1.423 | 0.46 | 0.26 |
+| 347,200 | 1.4672 | 1.4296 | -262.7 | -2.8 | 1.595 | 1.459 | 0.54 | 0.25 |
+
+**With the penalty the trunk does not turn over.** The two agree to within
+0.001 while the offset is small, separate as it drifts, and by step 347,200 the
+trunk with the penalty is 0.038 lower on the pool and still improving, below the
+best point the trunk without it reached. Its gradient norm stays flat where the
+other's doubles. Top-1 accuracy there is 0.5372 against 0.5346.
+
 ### The Package On The Combined Arm
 
 `arm-499-package` is `arm-495-combined` with both members on, at seed 17 and
@@ -161,9 +189,12 @@ measured on the ladder is 93 to 150 Elo weaker on every series, and
 
 ## What This Does Not Claim
 
-**That the package moves the turnover `0088` found.** The penalty holds the
-shared offset. `0088` traced the turnover to growth that sharpens the
-distribution, which the offset does not measure.
+**That the target will not turn over.** The long trunk is one run at width 128
+against one control, trained at a different code revision, and it stops at step
+347,200. `0088` traced the turnover to growth that sharpens the distribution;
+the trunk with the penalty shows that drift and quantization drive most of it at
+this width, not that nothing else can. `#491` still reads held-out loss along
+its trunk.
 
 **That no spike can occur later in a run.** The range test reads the first
 3,000 steps, where every spike it found happened.
@@ -177,9 +208,13 @@ The target run carries `model.query_key_normalization = true` and
 so `#596`'s rate bracket is taken with them on. The vehicle is unchanged and
 keeps its digest; both switches are left out of a recorded identity while off.
 
-The range and diagnostic runs are scratch and are not retained. Their
-configuration is the vehicle's file with the width-512 overrides
-`0090` records, `0104`'s three settings, `steps=63000`, and the rate.
+`#569`, the batch that keeps the target under a turnover, is needed only if
+`#491` sees one with these settings on.
+
+`arm-499-package` and `h499-zloss-trunk-0p003` stay on the machine that trained
+them. The range and diagnostic runs are scratch and are not retained. Their
+configuration is the vehicle's file with the width-512 overrides `0090`
+records, `0104`'s three settings, `steps=63000`, and the rate.
 
 ## References
 
