@@ -9,6 +9,8 @@ Accepted. Applies
 last candidates before the target run. The vehicle stays frozen and every other
 candidate is still read against it.
 
+`0105-the-target-trains-with-query-key-normalization-and-a-log-partition-penalty.md` takes the stability package's reading this arranges.
+
 ## Context
 
 The plan read the move-time head (`#593`) as an arm of the vehicle with clock

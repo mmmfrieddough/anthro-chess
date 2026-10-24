@@ -312,7 +312,11 @@ The core losses are:
 
 - action cross-entropy over the fixed action vocabulary;
 - sampling cross-entropy for the sampleable move-time distribution when timing
-  is enabled.
+  is enabled;
+- where a run sets `z_loss`, a penalty on the squared log-partition of the
+  action logits. The cross-entropy cannot see a constant every logit shares, and
+  this holds that constant near zero, where bfloat16 logits keep their
+  precision.
 
 Each target should have an explicit loss mask. Missing metadata should not be
 turned into fake training targets. For example, games without clock data can
