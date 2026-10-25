@@ -51,7 +51,6 @@ from anthro_chess.training.devices import (
 )
 from anthro_chess.training.distributed import SINGLE_PROCESS, DataParallel
 from anthro_chess.training.losses import masked_action_cross_entropy
-from anthro_chess.training.retention import protected_checkpoints
 from anthro_chess.training.runner import (
     _EXECUTION_COMPATIBILITY_KEYS,
     _EXECUTION_PROVENANCE_KEYS,
@@ -3121,4 +3120,3 @@ def test_a_branch_paused_and_resumed_still_names_its_trunk_checkpoint(
     assert record["optimization"]["branched_from"] == str(
         trunk.checkpoint_path.resolve()
     )
-    assert trunk.checkpoint_path.resolve() in protected_checkpoints(runs)

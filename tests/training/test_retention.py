@@ -3,12 +3,10 @@ from pathlib import Path
 
 import pytest
 
-from anthro_chess.inference.selection import write_model_selection
 from anthro_chess.interfaces.cli import main
 from anthro_chess.training.retention import (
     RetentionPolicy,
     plan_pruning,
-    protected_checkpoints,
 )
 
 
@@ -47,7 +45,6 @@ def _run(
     *,
     latest: int,
     config: dict[str, object] | None = None,
-    resumed_from: Path | None = None,
 ) -> Path:
     run = root / name
     directory = run / "checkpoints"
@@ -62,11 +59,6 @@ def _run(
         json.dumps(
             {
                 "resolved_config": {"config": {"steps": 100, **(config or {})}},
-                "optimization": {
-                    "resumed_from": (
-                        str(resumed_from.resolve()) if resumed_from else None
-                    )
-                },
             }
         ),
         encoding="utf-8",
@@ -78,9 +70,7 @@ def _names(paths: tuple[Path, ...]) -> list[str]:
     return [path.name for path in paths]
 
 
-def test_pruning_keeps_what_the_policy_and_other_readers_need(
-    tmp_path: Path,
-) -> None:
+def test_pruning_keeps_what_the_policy_needs(tmp_path: Path) -> None:
     trunk = _run(
         tmp_path,
         "trunk",
@@ -88,38 +78,18 @@ def test_pruning_keeps_what_the_policy_and_other_readers_need(
         latest=70,
         config={"keep_every_steps": 40, "keep_steps": [50]},
     )
-    _run(
-        tmp_path,
-        "branch",
-        (90,),
-        latest=90,
-        resumed_from=trunk / "checkpoints/step-00000020.pt",
-    )
-    write_model_selection(tmp_path, run="trunk", checkpoint="step-00000030.pt")
 
-    plan = plan_pruning(trunk, protected=protected_checkpoints(tmp_path))
+    plan = plan_pruning(trunk)
 
     # 40 and 50 are the policy's, 70 is latest, and 80 is above it, where a
     # save still in flight would be.
-    assert _names(plan.removable) == ["step-00000010.pt", "step-00000060.pt"]
-    assert _names(plan.held) == ["step-00000020.pt", "step-00000030.pt"]
-    assert plan.removable_bytes == 2 * len(b"weights")
-
-
-def test_a_run_that_resumed_from_itself_protects_nothing(tmp_path: Path) -> None:
-    run = tmp_path / "run"
-    _run(
-        tmp_path,
-        "run",
-        (10, 20),
-        latest=20,
-        config={"keep_every_steps": 1000},
-        resumed_from=run / "checkpoints/step-00000010.pt",
-    )
-
-    plan = plan_pruning(run, protected=protected_checkpoints(tmp_path))
-
-    assert _names(plan.removable) == ["step-00000010.pt"]
+    assert _names(plan.removable) == [
+        "step-00000010.pt",
+        "step-00000020.pt",
+        "step-00000030.pt",
+        "step-00000060.pt",
+    ]
+    assert plan.removable_bytes == 4 * len(b"weights")
 
 
 def test_a_cadence_given_to_the_command_never_overrides_the_one_a_run_declares(
@@ -134,16 +104,13 @@ def test_a_cadence_given_to_the_command_never_overrides_the_one_a_run_declares(
         config={"keep_every_steps": 10},
     )
 
-    assert plan_pruning(undeclared, protected=()).removable == ()
-    assert _names(
-        plan_pruning(undeclared, protected=(), keep_every_steps=20).removable
-    ) == ["step-00000010.pt"]
-    assert plan_pruning(declared, protected=(), keep_every_steps=20).removable == ()
+    assert plan_pruning(undeclared).removable == ()
+    assert _names(plan_pruning(undeclared, keep_every_steps=20).removable) == [
+        "step-00000010.pt"
+    ]
+    assert plan_pruning(declared, keep_every_steps=20).removable == ()
     assert (
-        plan_pruning(
-            undeclared, protected=(), keep_every_steps=20, keep_steps=(10,)
-        ).removable
-        == ()
+        plan_pruning(undeclared, keep_every_steps=20, keep_steps=(10,)).removable == ()
     )
 
 
@@ -151,7 +118,7 @@ def test_a_run_without_a_latest_checkpoint_is_left_alone(tmp_path: Path) -> None
     run = _run(tmp_path, "run", (10, 20), latest=20)
     (run / "checkpoints/latest.json").unlink()
 
-    plan = plan_pruning(run, protected=(), keep_every_steps=1000)
+    plan = plan_pruning(run, keep_every_steps=1000)
 
     assert plan.removable == ()
     assert plan.skipped == "no latest checkpoint"

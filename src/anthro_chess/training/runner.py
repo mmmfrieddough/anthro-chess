@@ -1400,7 +1400,7 @@ def _discard_superseded(path: Path) -> None:
     """
 
     try:
-        remove_checkpoint(path, protected=())
+        remove_checkpoint(path)
     except CheckpointError as error:
         logger.warning("%s; the run continues and leaves it in place", error)
 
