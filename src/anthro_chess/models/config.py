@@ -50,9 +50,10 @@ class MoveModelConfig(ConfigModel):
     #: Whether the model also writes how long the chosen move takes, from the
     #: same context plus that move.
     time_head: bool = False
-    #: The timing loss's weight against a move loss of one. At one the
-    #: objective is the likelihood of the move and its time together.
-    time_loss_weight: float = Field(default=1.0, gt=0.0)
+    #: The timing loss's weight against a move loss of one, which sets how far
+    #: timing bends the trunk the move is read from. Decision 0106 records the
+    #: reading that set it.
+    time_loss_weight: float = Field(default=0.3, gt=0.0)
 
     @model_validator(mode="after")
     def validate_attention_shape(self) -> MoveModelConfig:

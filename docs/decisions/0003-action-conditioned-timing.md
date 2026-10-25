@@ -4,7 +4,8 @@ Date: 2026-07-11
 
 ## Status
 
-Accepted as initial design direction.
+Accepted as initial design direction. Given its representation and loss weight
+by `0106-the-time-head-reads-the-chosen-move-at-a-third-of-the-move-weight.md`.
 
 ## Context
 

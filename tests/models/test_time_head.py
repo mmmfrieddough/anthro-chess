@@ -186,7 +186,7 @@ def test_a_model_without_the_head_keeps_the_identity_it_always_had() -> None:
     assert without["timing_head"] is False
     assert "time_head" not in cast(dict[str, object], without["config"])
     assert "time_loss_weight" not in cast(dict[str, object], without["config"])
-    assert cast(dict[str, object], with_head["config"])["time_loss_weight"] == 1.0
+    assert cast(dict[str, object], with_head["config"])["time_loss_weight"] == 0.3
     assert with_head["timing_head"] == {
         "distribution": "logistic-mixture-over-log1p-ms",
         "components": MOVE_TIME_COMPONENTS,
