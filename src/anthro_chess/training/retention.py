@@ -93,8 +93,9 @@ def record_branch(run_path: Path, source: Path) -> None:
     if source.parent.name != "checkpoints":
         return
     directory = source.parent.parent / BRANCHES_DIRECTORY
-    note = directory / run_path.name
-    temporary = directory / f".{run_path.name}.tmp"
+    name = run_path.resolve().name
+    note = directory / name
+    temporary = directory / f".{name}.tmp"
     try:
         directory.mkdir(exist_ok=True)
         temporary.write_text(f"{source.resolve()}\n", encoding="utf-8")
@@ -125,7 +126,7 @@ def run_protected_checkpoints(run_path: Path) -> frozenset[Path]:
         if note.name.startswith("."):
             continue
         try:
-            protected.add(Path(note.read_text(encoding="utf-8").strip()).resolve())
+            protected.add(Path(note.read_text(encoding="utf-8").strip()))
         except OSError as error:
             raise CheckpointError(
                 f"cannot read the branch point {note}: {error}"
