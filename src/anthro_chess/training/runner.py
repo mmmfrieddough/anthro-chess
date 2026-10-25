@@ -111,8 +111,9 @@ from anthro_chess.training.losses import (
 from anthro_chess.training.retention import (
     RetentionPolicy,
     branch_point,
-    protected_checkpoints,
+    record_branch,
     remove_checkpoint,
+    run_protected_checkpoints,
 )
 from anthro_chess.training.schedule import LearningRateSchedule
 from anthro_chess.training.tensorboard import (
@@ -731,6 +732,8 @@ def _train(
             if resumed_from is None:
                 clear_latest_checkpoint(output_directory)
             _prepare_metrics(metrics_path, through_step=starting_step)
+            if run_record.branched_from is not None:
+                record_branch(output_directory, run_record.branched_from)
             # Before the first checkpoint rather than after it, because whatever
             # this replaces describes a different run: the finished one a resume
             # continues, or an earlier one that reused the directory. Left until
@@ -1401,9 +1404,7 @@ def _discard_superseded(path: Path, output_directory: Path) -> None:
     """
 
     try:
-        remove_checkpoint(
-            path, protected=protected_checkpoints(output_directory.parent)
-        )
+        remove_checkpoint(path, protected=run_protected_checkpoints(output_directory))
     except CheckpointError as error:
         logger.warning("%s; the run continues and leaves it in place", error)
 

@@ -9,6 +9,8 @@ from anthro_chess.training.retention import (
     RetentionPolicy,
     plan_pruning,
     protected_checkpoints,
+    record_branch,
+    run_protected_checkpoints,
 )
 
 
@@ -104,6 +106,21 @@ def test_pruning_keeps_what_the_policy_and_other_readers_need(
     assert _names(plan.removable) == ["step-00000010.pt", "step-00000060.pt"]
     assert _names(plan.held) == ["step-00000020.pt", "step-00000030.pt"]
     assert plan.removable_bytes == 2 * len(b"weights")
+
+
+def test_a_run_protects_what_its_branches_noted_and_the_selection_pins(
+    tmp_path: Path,
+) -> None:
+    trunk = _run(tmp_path, "trunk", (10, 20, 30), latest=30)
+    other = _run(tmp_path, "other", (10,), latest=10)
+    record_branch(tmp_path / "branch", trunk / "checkpoints/step-00000010.pt")
+    record_branch(tmp_path / "elsewhere", other / "checkpoints/step-00000010.pt")
+    write_model_selection(tmp_path, run="trunk", checkpoint="step-00000020.pt")
+
+    assert run_protected_checkpoints(trunk) == {
+        (trunk / "checkpoints/step-00000010.pt").resolve(),
+        (trunk / "checkpoints/step-00000020.pt").resolve(),
+    }
 
 
 def test_a_run_that_resumed_from_itself_protects_nothing(tmp_path: Path) -> None:
