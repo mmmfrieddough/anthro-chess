@@ -10,6 +10,8 @@ last candidates before the target run. The vehicle stays frozen and every other
 candidate is still read against it.
 
 `0105-the-target-trains-with-query-key-normalization-and-a-log-partition-penalty.md` takes the stability package's reading this arranges.
+`0106-the-time-head-reads-the-chosen-move-at-a-third-of-the-move-weight.md` takes
+the time head's.
 
 ## Context
 

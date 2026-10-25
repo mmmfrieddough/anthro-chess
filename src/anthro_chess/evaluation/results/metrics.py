@@ -444,7 +444,6 @@ MOVE_TIMING_PROJECTION = register_projection(
             NormalizedColumn.ACTION_IDS.value,
             NormalizedColumn.BLACK_NORMALIZED_RATING.value,
             NormalizedColumn.CLOCK_REMAINING_DELTA_MS.value,
-            NormalizedColumn.CLOCK_STATUS.value,
             NormalizedColumn.INITIAL_POSITION.value,
             NormalizedColumn.RULESET.value,
             NormalizedColumn.TIME_INCREMENT_MS.value,
@@ -934,6 +933,66 @@ HELD_OUT_MOVE_LOSS_BY_CLOCK_PRESSURE: Mapping[str, MetricDefinition] = {
     )
     for pressure in CLOCK_PRESSURE_SLICE_NAMES
 }
+
+#: The slices a move time can be read in. An untimed game, and a decision whose
+#: clock is unknown, records no move time.
+TIMED_SLICE_NAMES: tuple[str, ...] = (
+    *(speed for speed in SPEED_SLICE_NAMES if speed != "untimed"),
+    *(pressure for pressure in CLOCK_PRESSURE_SLICE_NAMES if pressure != "unclocked"),
+)
+
+
+def _timing_metrics(
+    stem: str,
+    direction: MetricDirection,
+    summary: str,
+) -> tuple[MetricDefinition, Mapping[str, MetricDefinition]]:
+    """Register one timing metric overall and in every timed slice."""
+
+    def register(suffix: str, scope: str) -> MetricDefinition:
+        return register_metric(
+            MetricDefinition(
+                identifier=f"timing.{stem}{suffix}",
+                family=TIMING_FAMILY.identifier,
+                direction=direction,
+                definition_version=1,
+                summary=f"{summary} {scope}",
+                cost=MetricCost.SINGLE_PASS,
+                projection=MOVE_TIMING_PROJECTION.name,
+            )
+        )
+
+    return register("", "Over every held-out move with a recorded time."), {
+        name: register(f"_{name}", f"On {name.replace('_', ' ')} moves.")
+        for name in TIMED_SLICE_NAMES
+    }
+
+
+TIMING_MOVE_TIME_LOSS, TIMING_MOVE_TIME_LOSS_BY_SLICE = _timing_metrics(
+    "move_time_loss",
+    MetricDirection.LOWER_IS_BETTER,
+    "Negative log-likelihood of the human's recorded move time, given the "
+    "position, the clock, and the move the human played.",
+)
+
+TIMING_MARGINAL_MOVE_TIME_LOSS, TIMING_MARGINAL_MOVE_TIME_LOSS_BY_SLICE = (
+    _timing_metrics(
+        "marginal_move_time_loss",
+        MetricDirection.INFORMATIONAL,
+        "The same likelihood under the human move-time histogram at matched "
+        "rating band, speed, clock bucket and phase, fitted on the scored moves "
+        "themselves: the bar a time head that reads the position and the move "
+        "has to beat.",
+    )
+)
+
+TIMING_MOVE_TIME_DISTANCE, TIMING_MOVE_TIME_DISTANCE_BY_SLICE = _timing_metrics(
+    "move_time_distance",
+    MetricDirection.LOWER_IS_BETTER,
+    "Wasserstein distance in log(1 + ms) between human move times and times "
+    "sampled after a move sampled from the legal policy, on the same decisions.",
+)
+
 
 LEGALITY_MASK_PENALTY_BY_PHASE: Mapping[str, MetricDefinition] = {
     phase: register_metric(

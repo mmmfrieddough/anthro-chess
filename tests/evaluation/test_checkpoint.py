@@ -34,6 +34,7 @@ from anthro_chess.evaluation.checkpoint import (
     ADJUDICATION_KIND,
     DEPENDENCY_KIND,
     HELD_OUT_KIND,
+    TIMING_KIND,
     _sessions,
 )
 from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
@@ -201,6 +202,47 @@ def test_evaluation_records_sliced_results_over_the_frozen_pool(
     assert payload["view"]["selected_games"] == 6
     assert payload["positions"] is None
     held_out.verify()
+
+
+def test_a_model_that_writes_time_is_read_on_the_times_humans_took(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = training_run(
+        tmp_path / "run",
+        normalized=normalized,
+        manifest=manifest,
+        clock_inputs=True,
+        time_head=True,
+    )
+    store = ResultsStore(tmp_path / "results")
+    detail = DetailStore(tmp_path / "detail")
+
+    first = _evaluate(_config(pool, checkpoint), store=store, detail=detail)
+    _evaluate(_config(pool, checkpoint), store=store, detail=detail)
+
+    timing = [item for item in store.results() if item.kind == TIMING_KIND]
+    assert len(timing) == 2
+    metrics = {item.metric: item for item in timing[0].measurements}
+    # Every fixture game is 5+0 blitz, and each side's first move runs no
+    # clock, so some scored decisions carry no time.
+    loss = metrics["timing.move_time_loss"]
+    assert loss.sample_size == metrics["timing.move_time_loss_blitz"].sample_size
+    assert 0 < (loss.sample_size or 0) < first.slices.overall.position_count
+    assert loss.value > 0.0
+    assert metrics["timing.marginal_move_time_loss"].value > 0.0
+    assert metrics["timing.move_time_distance"].value >= 0.0
+    assert "timing.move_time_loss_bullet" not in metrics
+    # Sampling is seeded by the batch, so a second reading repeats the first.
+    assert {item.metric: item.value for item in timing[1].measurements} == {
+        name: item.value for name, item in metrics.items()
+    }
+    assert timing[0].detail is not None
+    payload = detail.read(timing[0].detail)
+    assert payload["slices"]["all"]["moves"] == loss.sample_size
 
 
 def test_an_ordinary_reading_never_classifies_an_opening(
@@ -1204,7 +1246,7 @@ def test_a_pool_pass_replicates_only_onto_the_devices_it_declares(
     runner = cast(Any, _Replicating(torch.device("cuda", 0)))
 
     assert CheckpointEvaluationConfig(pool=Path("artifacts/pool")).devices == 1
-    assert len(_sessions(runner, None, None, 1)) == 1
-    assert len(_sessions(runner, None, None, 2)) == 2
-    assert len(_sessions(runner, None, None, "all")) == 4
-    assert len(_sessions(runner, None, None, 8)) == 4
+    assert len(_sessions(runner, None, None, 1, timed=False)) == 1
+    assert len(_sessions(runner, None, None, 2, timed=False)) == 2
+    assert len(_sessions(runner, None, None, "all", timed=False)) == 4
+    assert len(_sessions(runner, None, None, 8, timed=False)) == 4

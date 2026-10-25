@@ -10,7 +10,7 @@ tokens along a geometric bias generated from the position itself. Decisions
 from __future__ import annotations
 
 from functools import cache
-from typing import cast
+from typing import Literal, cast, overload
 
 import chess
 import torch
@@ -18,6 +18,7 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 from anthro_chess.chess import (
+    ACTION_VOCABULARY_SIZE,
     MOVE_ACTION_COUNT,
     TERMINAL_ACTION_IDS,
     action_vocabulary_identity,
@@ -32,6 +33,11 @@ from anthro_chess.data import (
 )
 from anthro_chess.models.batching import MoveModelBatch, OptionalTensor
 from anthro_chess.models.config import MoveModelConfig
+from anthro_chess.models.timing import (
+    INITIAL_LOCATION_RANGE,
+    MOVE_TIME_COMPONENTS,
+    MOVE_TIME_RESOLUTION_MS,
+)
 
 _PIECE_ID_COUNT = 13
 _SIDE_TO_MOVE_COUNT = 2
@@ -59,6 +65,10 @@ _CLOCK_FEATURE_COUNT = 6
 #: Fields a model reading no clock leaves out of its identity, so that it is
 #: still the identity every run recorded before they existed.
 _CLOCK_CONFIG_FIELDS = ("clock_inputs", "clock_dropout")
+_TIME_HEAD_CONFIG_FIELDS = ("time_head", "time_loss_weight")
+#: Lichess starts neither clock until each side has moved once, so the first
+#: two plies record no time anyone spent.
+_FIRST_TIMED_PLY = 2
 
 
 class RatingEmbedding(nn.Module):
@@ -519,6 +529,58 @@ class SourceDestinationHead(nn.Module):
         return torch.cat((moves, terminals), dim=-1)
 
 
+class MoveTimeHead(nn.Module):
+    """Write how long a chosen move takes, from its decision and the move.
+
+    The move is read as the final tokens of the two squares it joins, beside the
+    whole board pooled, so a recapture and a quiet developing move from one
+    position can take different times. A terminal action joins no squares and
+    the corpus records no clock for one, so its distribution is never trained.
+    """
+
+    mirrored_squares: Tensor
+    action_squares: Tensor
+
+    def __init__(self, config: MoveModelConfig) -> None:
+        super().__init__()
+        self.readout = nn.Sequential(
+            nn.Linear(3 * config.model_dim, config.model_dim),
+            nn.GELU(),
+            nn.Linear(config.model_dim, 3 * MOVE_TIME_COMPONENTS),
+        )
+        output = self.readout[-1]
+        assert isinstance(output, nn.Linear)
+        with torch.no_grad():
+            output.bias[MOVE_TIME_COMPONENTS : 2 * MOVE_TIME_COMPONENTS] = (
+                torch.linspace(*INITIAL_LOCATION_RANGE, MOVE_TIME_COMPONENTS)
+            )
+        for name, values in (
+            ("mirrored_squares", chess.SQUARES_180),
+            ("action_squares", _action_square_table()),
+        ):
+            self.register_buffer(
+                name,
+                torch.tensor(values, dtype=torch.long),
+                persistent=False,
+            )
+
+    def forward(
+        self, squares: Tensor, black_to_move: Tensor, actions: Tensor
+    ) -> Tensor:
+        """Return the raw mixture parameters for each decision's action."""
+
+        # Actions name squares in the board's frame; the tokens are in the mover's.
+        joined = self.action_squares[actions]
+        joined = torch.where(
+            black_to_move.unsqueeze(-1), self.mirrored_squares[joined], joined
+        )
+        ends = squares.gather(
+            -2, joined.unsqueeze(-1).expand(*joined.shape, squares.shape[-1])
+        )
+        features = torch.cat((squares.mean(dim=-2), ends.flatten(-2)), dim=-1)
+        return cast(Tensor, self.readout(features))
+
+
 class MoveModel(nn.Module):
     """Predict human action logits from one decision and the boards behind it."""
 
@@ -545,17 +607,41 @@ class MoveModel(nn.Module):
         # cannot be read without also reading the configuration.
         self.norm = nn.LayerNorm(self.config.model_dim)
         self.action_head = SourceDestinationHead(self.config)
+        self.time_head = MoveTimeHead(self.config) if self.config.time_head else None
 
-    def forward(self, batch: MoveModelBatch) -> Tensor:
+    @overload
+    def forward(
+        self, batch: MoveModelBatch, *, with_time: Literal[False] = False
+    ) -> Tensor: ...
+
+    @overload
+    def forward(
+        self, batch: MoveModelBatch, *, with_time: Literal[True]
+    ) -> tuple[Tensor, Tensor]: ...
+
+    def forward(
+        self, batch: MoveModelBatch, *, with_time: bool = False
+    ) -> Tensor | tuple[Tensor, Tensor]:
         """Return raw action logits shaped batch by sequence by vocabulary.
 
         Every batch is validated by whichever factory built it, so nothing is
         rechecked here. Padded timesteps produce ordinary finite logits that no
         caller reads: the loss ignores them by target, and every scoring path
         gathers by the loss mask before looking.
+
+        ``with_time`` also returns the time head's raw output for each
+        timestep's target action.
         """
 
-        return self.decide(batch, batch.decision_columns)
+        if not with_time:
+            return self.decide(batch, batch.decision_columns)
+        if self.time_head is None:
+            raise ValueError("this model has no time head")
+        squares, black = self.encode_decisions(batch, batch.decision_columns)
+        return (
+            cast(Tensor, self.action_head(squares, black)),
+            cast(Tensor, self.time_head(squares, black, batch.action_targets)),
+        )
 
     def decide_at(self, batch: MoveModelBatch, decisions: Tensor) -> Tensor:
         """Return logits for one named ply per row, shaped batch by vocabulary.
@@ -570,9 +656,18 @@ class MoveModel(nn.Module):
     def decide(self, batch: MoveModelBatch, decisions: Tensor) -> Tensor:
         """Return logits for the named decisions, shaped like their index."""
 
+        return cast(Tensor, self.action_head(*self.encode_decisions(batch, decisions)))
+
+    def encode_decisions(
+        self, batch: MoveModelBatch, decisions: Tensor
+    ) -> tuple[Tensor, Tensor]:
+        """Return the named decisions' final square tokens and whether black moves.
+
+        What both heads read.
+        """
+
         squares = self.encode(batch, decisions)
-        black = _at_decision(batch.inputs.side_to_move, decisions).bool()
-        return cast(Tensor, self.action_head(squares, black))
+        return squares, _at_decision(batch.inputs.side_to_move, decisions).bool()
 
     def encode(self, batch: MoveModelBatch, decisions: Tensor) -> Tensor:
         """Encode the named decisions' squares, each reading its own history."""
@@ -626,6 +721,8 @@ def model_identity(config: MoveModelConfig) -> dict[str, object]:
     # identity.
     if not config.query_key_normalization:
         excluded.add("query_key_normalization")
+    if not config.time_head:
+        excluded.update(_TIME_HEAD_CONFIG_FIELDS)
     return {
         "name": "anthro-move-model",
         # Version 7 is the architecture 0070 records: one decision per forward
@@ -642,8 +739,33 @@ def model_identity(config: MoveModelConfig) -> dict[str, object]:
         # refuse such a checkpoint instead of serving it under new endpoints.
         "rating_anchors": [WEAK_RATING_ANCHOR, STRONG_RATING_ANCHOR],
         "timing_inputs": config.clock_inputs,
-        "timing_head": False,
+        # What a sampled time means, which the configuration does not say.
+        "timing_head": (
+            {
+                "distribution": "logistic-mixture-over-log1p-ms",
+                "components": MOVE_TIME_COMPONENTS,
+                "resolution_ms": MOVE_TIME_RESOLUTION_MS,
+            }
+            if config.time_head
+            else False
+        ),
     }
+
+
+def move_time_targets(batch: MoveModelBatch) -> OptionalTensor:
+    """Return the time each timestep's move took, where the clock recorded it.
+
+    A move whose game carries no clock, a terminal action, and a ply before the
+    clocks start all have none.
+    """
+
+    inputs = batch.inputs
+    return _spent(
+        inputs.player_clock_ms,
+        batch.target_clock_after_move_ms,
+        inputs.time_increment_ms,
+        batch.ply_indices >= _FIRST_TIMED_PLY,
+    )
 
 
 def _at_decision(values: Tensor, decisions: Tensor) -> Tensor:
@@ -714,6 +836,20 @@ def _flipped_en_passant_tokens() -> tuple[int, ...]:
         en_passant_token(None),
         *(en_passant_token(square) for square in chess.SQUARES_180),
     )
+
+
+@cache
+def _action_square_table() -> tuple[tuple[int, int], ...]:
+    """Return the two squares each action joins, in the board's frame.
+
+    A terminal action joins none and reads the first square twice.
+    """
+
+    table = [(0, 0)] * ACTION_VOCABULARY_SIZE
+    for action_id in range(MOVE_ACTION_COUNT):
+        move = decode_move(action_id)
+        table[action_id] = (move.from_square, move.to_square)
+    return tuple(table)
 
 
 @cache

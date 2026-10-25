@@ -2104,6 +2104,33 @@ Target timing values should come from human data where possible. The goal is not
 to minimize timeouts, but to match human timing behavior for the configured
 rating and clock context.
 
+### The Implemented Offline Reading
+
+A checkpoint with a time head is also read for move time in the held-out pass,
+on the same decisions and in the same forward passes, and records its own
+series. Only decisions whose time the clock recorded are read, which leaves out
+untimed games, terminal actions, and each side's first move. Every reading is
+reported overall, per speed, and per clock bucket.
+
+- **The move-time loss** is the negative log-likelihood of the human's time
+  given the human's move: the timing validation loss.
+- **The marginal move-time loss** is the same likelihood under the human
+  move-time histogram of the decision's rating band, speed, clock bucket and
+  phase, fitted on the scored decisions themselves. It is informational: the
+  bar a head has to clear before it can be said to read the position and the
+  move rather than only the clock. Fitted in-sample, it flatters itself, so
+  clearing it understates what the head adds.
+- **The move-time distance** compares the human times with times sampled the
+  way the runtime would: a move drawn from the legal policy at temperature one,
+  then a time drawn after it. Both are taken at the same decisions, so the two
+  distributions are matched on every context the decisions carry. It is a
+  Wasserstein distance in `log(1 + ms)`, where an error is weighed relative to
+  the time itself.
+
+A model that samples the right times in the wrong places can still read close on
+the distance, because the distance compares two pooled distributions. The loss is
+what checks each decision.
+
 ## Move-Time Coherence
 
 Timing metrics should also check whether sampled actions and sampled move times

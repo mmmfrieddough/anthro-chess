@@ -6,6 +6,9 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
+from anthro_chess.models.batching import OptionalTensor
+from anthro_chess.models.timing import MoveTimeDistribution
+
 #: What :func:`torch.nn.functional.cross_entropy` drops, and its own default.
 _IGNORE_INDEX = -100
 
@@ -51,3 +54,19 @@ def masked_squared_log_partition(logits: Tensor, loss_mask: Tensor) -> Tensor:
     log_partition = torch.logsumexp(logits.float(), dim=-1)
     enabled = loss_mask.to(log_partition.dtype)
     return (log_partition.square() * enabled).sum() / enabled.sum()
+
+
+def masked_move_time_loss(
+    parameters: Tensor,
+    targets: OptionalTensor,
+    loss_mask: Tensor,
+) -> Tensor:
+    """Average move-time negative log-likelihood over timesteps with a time.
+
+    A batch can hold no timed move at all, so the count is clamped to one and
+    such a batch contributes nothing rather than a non-finite loss.
+    """
+
+    timed = (targets.present & loss_mask).float()
+    losses = -MoveTimeDistribution.from_parameters(parameters).log_prob(targets.values)
+    return (losses * timed).sum() / timed.sum().clamp(min=1.0)

@@ -47,6 +47,13 @@ class MoveModelConfig(ConfigModel):
     #: product, which bounds an attention logit by the two learned gains rather
     #: than by however far the projections have grown.
     query_key_normalization: bool = False
+    #: Whether the model also writes how long the chosen move takes, from the
+    #: same context plus that move.
+    time_head: bool = False
+    #: The timing loss's weight against a move loss of one, which sets how far
+    #: timing bends the trunk the move is read from. Decision 0106 records the
+    #: reading that set it.
+    time_loss_weight: float = Field(default=0.3, gt=0.0)
 
     @model_validator(mode="after")
     def validate_attention_shape(self) -> MoveModelConfig:
