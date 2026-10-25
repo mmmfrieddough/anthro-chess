@@ -1906,6 +1906,36 @@ Engine-analysis metrics such as centipawn loss or engine-best agreement may be
 useful supporting diagnostics. They should not be treated as the definition of
 human rating, especially at lower ratings.
 
+### The Human Reference Surface
+
+`docs/decisions/0100-the-dial-accepts-its-whole-span-and-is-measured-against-humans.md`
+settles that the ladder's pairings are read against human games rather than the
+Elo formula, which no human pairing reaches.
+`anthro_chess.evaluation.ladder_reference` builds that reference once per
+corpus, and `anthro eval ladder-reference` is its build surface.
+
+For each pair of grid ratings it counts held-out games from the population the
+ladder's openings name, with each player inside a narrow window of a grid
+rating, and reports how often the higher-rated player scores. It is a surface
+over both ratings rather than one curve pooled by gap, since a pooled curve is
+dominated by the middle of the range and hides where a model stops separating
+players. Each cell averages the higher-rated player's score as white and as
+black, because the ladder plays every pairing from both sides, and carries its
+game count and standard error. A cell short of the declared count at either
+colour reports its count and no score rather than being filled from its
+neighbours. While the ladder runs no clock, games decided by one are left out.
+
+The artifact stores counts and derives every score on load. Its identity is a
+digest of the declared selection and those counts, so a rebuild elsewhere is
+verified against the pinned one and a ladder reading can name the reference it
+was read against.
+
+Far-gap human pairings are not a clean target: they are selected toward new and
+provisional accounts, and mis-rated players produce the upsets that fatten the
+far end. The standard error says nothing about that, so a comparison at the far
+end needs a wider allowance than the cell's own error until a per-game rating
+change can identify those players.
+
 ### Puzzle Rating Response
 
 A published puzzle set whose puzzles carry difficulty ratings supports a third

@@ -41,6 +41,8 @@ LADDER_ARTIFACT_FIELDS = ("openings.pool",)
 #: generation the cut must contain, which is a machine-local artifact like any
 #: other.
 POOL_ARTIFACT_FIELDS = ("normalized", "manifest", "predecessor")
+#: ``anthro eval ladder-reference``: the normalized corpus and its manifest.
+LADDER_REFERENCE_ARTIFACT_FIELDS = ("normalized", "manifest")
 
 ConfigT = TypeVar("ConfigT", bound=ConfigModel)
 

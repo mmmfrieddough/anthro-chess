@@ -62,6 +62,12 @@ left at the configured path keeps scoring, labelled as itself and comparable to
 nothing the selection has moved on to. A selection recording none loads whatever
 the path holds, which is what a pool with no designated generation needs.
 
+It also contains the ladder-reference selection for `anthro eval
+ladder-reference`, which names the normalized corpus, the held-out population
+and rating grid the human reference surface is counted over, and the identity
+digest of the surface its first build produced. Like a pool's, that digest is
+verified on every rebuild and is what a reading of the surface pins.
+
 It also contains the checkpoint-evaluation selection for `anthro eval run`,
 which names the pool and the view to score without naming a checkpoint. Leaving
 the model selection out keeps the canonical reading defined by its inputs
