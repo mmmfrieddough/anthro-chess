@@ -89,7 +89,13 @@ def timing_columns(
     recorded = targets.values[mask]
     human_ms = recorded[timed]
     loss = -_active(human, mask).log_prob(recorded)[timed]
-    sampled_ms = _active(times(sampled_actions), mask).sample(generator)[timed]
+    sampled = _active(times(sampled_actions), mask).sample(generator)[timed]
+    # Onto the clock's grid, so a sample is compared with the time the clock
+    # would have recorded for it. A sample under half an interval would
+    # otherwise sit apart from the zeros the humans' instant moves record as.
+    sampled_ms = (
+        torch.round(sampled / MOVE_TIME_RESOLUTION_MS) * MOVE_TIME_RESOLUTION_MS
+    ).to(torch.long)
 
     keys = [
         key

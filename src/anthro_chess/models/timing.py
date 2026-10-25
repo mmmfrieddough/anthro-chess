@@ -82,7 +82,7 @@ class MoveTimeDistribution:
         return torch.logsumexp(F.log_softmax(self.logits, dim=-1) + component, dim=-1)
 
     def sample(self, generator: torch.Generator | None = None) -> Tensor:
-        """Return one move time per decision, as the clock would record it."""
+        """Return one move time per decision, in whole milliseconds."""
 
         component = torch.multinomial(
             F.softmax(self.logits.flatten(0, -2), dim=-1),
@@ -97,7 +97,4 @@ class MoveTimeDistribution:
             device=location.device,
         ).clamp(1e-6, 1.0 - 1e-6)
         logged = (location + scale * torch.logit(uniform)).clamp(max=_LONGEST_LOGGED_MS)
-        recorded = torch.round(
-            torch.expm1(logged).clamp(min=0.0) / MOVE_TIME_RESOLUTION_MS
-        )
-        return (recorded * MOVE_TIME_RESOLUTION_MS).to(torch.long)
+        return torch.expm1(logged).clamp(min=0.0).round().to(torch.long)

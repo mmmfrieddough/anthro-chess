@@ -36,10 +36,14 @@ increment the move earned. Lichess starts neither clock until each side has
 moved once, so the first two plies carry no target, and neither does a
 terminal action or an untimed game.
 
-**`model.time_loss_weight` is 0.3.** Under Adam the head's own parameters
-barely see the weight. What it sets is how far timing bends the trunk the move
-is read from, so it states how much move prediction this model will spend on
-timing. 0.3 is the largest weight read whose move loss holds.
+**The move and its time are weighed equally, and `model.time_loss_weight` is
+0.3.** Under Adam the head's own parameters barely see the weight. What it sets
+is how far timing bends the trunk the move is read from. Weighed equally, the
+criterion is the likelihood of the move and its time together, and on it 1.0 and
+0.3 read within 0.004 nats of each other on one draw each, nearer than either
+side's seed noise can separate. At 1.0 the move pays a cost seven replicate
+deviations wide; at 0.3 neither output pays one that can be measured. That is
+the reason for 0.3: it is the weight at which both outputs hold.
 
 **The target trains with the head.** `model.time_head = true` joins the settings
 `0104` and `0105` give the target run.
@@ -84,6 +88,21 @@ bound in the narrower direction. The 1.0 arm read 0.459 there. That is the cell
 `0104` found the combined arm reading above the sum of its members, at T=0
 only. The other cells read within the bound at both weights.
 
+**Weighed together, 1.0 and 0.3 tie.** Per held-out decision, counting the
+timing loss on the 96% of decisions that carry a time:
+
+| weight | move | timing | together |
+| --- | ---: | ---: | ---: |
+| 1.0 | 1.40884 | 6.218 | 7.399 |
+| 0.3 | 1.40287 | 6.228 | 7.403 |
+| 0.1 | 1.40142 | 6.246 | 7.418 |
+
+**The head reads the chosen move.** On 126k timed decisions from 2,000 held-out
+games, the 0.3 head scores the human's time at 6.251 given the human's move,
+6.457 given the policy's likeliest other legal move, 6.478 given the second
+likeliest, and 6.580 given a random legal one, against a marginal of 6.595. Told
+the wrong move, even a plausible one, it keeps under half its margin.
+
 Throughput is unchanged: about 51k positions a second on one card, the
 combined arm's rate per card.
 
@@ -96,10 +115,6 @@ reading alone.
 **That a frozen-trunk head would be worse.** Stopping the timing gradient at the
 trunk costs no move prediction by construction. 0.1 approaches it and loses 7%
 of the 1.0 arm's margin; the endpoint itself is not read.
-
-**That the head reads the chosen move.** Its loss is scored given the human's
-move and beats a marginal that ignores the position, but how much of the margin
-comes from the move rather than the board is not separated.
 
 **Anything about promotion choice.** A queen and a knight promotion join the
 same two squares and get the same distribution.
@@ -114,8 +129,9 @@ target's width. A move-loss cost there would show beside the rate, and the
 weight is re-read if it does.
 
 `#594` and `#597` sample from the distribution through the model's time head.
-`MoveTimeDistribution.sample` lands on the clock's centisecond grid, so a
-sample is a time the clock could record.
+`MoveTimeDistribution.sample` returns the model's time to the millisecond. Only
+the benchmark puts a sample on the clock's centisecond grid, to compare it with
+recorded times.
 
 The three arms are retained: `arm-593-time-head`, `arm-593-time-weight-0p3`
 and `arm-593-time-weight-0p1`.
