@@ -430,11 +430,9 @@ once the next has landed, `latest.json` names it, and the run record points at
 it. **Permanent** checkpoints are kept for later reading: every multiple of a
 sparse cadence, any steps the run declares (a trunk branched where that cadence
 does not land), and the final step. `TrainingConfig` owns the settings, and a
-run that declares no permanent cadence keeps everything it writes. A checkpoint
-another run branched from, or that the default model selection pins, is never
-deleted. A branch notes its branch point in the trunk's `branches/` directory
-when it starts, which is all a rolling deletion reads, so a save costs the same
-however many runs share the root.
+run that declares no permanent cadence keeps everything it writes. A rolling
+checkpoint exists only to resume its own run, so a step to branch from or to
+pin as the default model selection has to be a permanent one.
 
 SIGTERM or SIGINT makes stopping a pause rather than a loss: the run finishes
 the optimizer step in flight, saves through the same atomic path, and each
@@ -446,9 +444,7 @@ SIGKILL. A stop during the final step lets the run finish instead.
 
 `anthro checkpoints prune` applies the same policy to runs already on disk. It
 only reports until told to delete, and never touches a checkpoint at or above a
-run's latest, where a live run may still be writing. It finds branch points in
-every run's record rather than in `branches/`, which is slow on a full root but
-also sees branches started before the notes existed.
+run's latest, where a live run may still be writing.
 
 The dataloader should prefer restartable sampling designs. Avoid relying on one
 large opaque shuffle whose exact internal state is hard to recover. Better
@@ -596,8 +592,6 @@ Retain the complete run directory as one artifact:
   metrics.jsonl
   tensorboard/
     events.out.tfevents...
-  branches/
-    <branch-run-name>
   checkpoints/
     latest.json
     step-........pt

@@ -51,11 +51,7 @@ from anthro_chess.training.devices import (
 )
 from anthro_chess.training.distributed import SINGLE_PROCESS, DataParallel
 from anthro_chess.training.losses import masked_action_cross_entropy
-from anthro_chess.training.retention import (
-    protected_checkpoints,
-    record_branch,
-    run_protected_checkpoints,
-)
+from anthro_chess.training.retention import protected_checkpoints
 from anthro_chess.training.runner import (
     _EXECUTION_COMPATIBILITY_KEYS,
     _EXECUTION_PROVENANCE_KEYS,
@@ -2809,7 +2805,6 @@ def _checkpoint_names(run: Path) -> list[str]:
 
 def test_a_run_keeps_its_rolling_checkpoint_its_permanent_set_and_its_final_step(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prepared = prepare_pgn(
         SAMPLE_PGN,
@@ -2827,22 +2822,6 @@ def test_a_run_keeps_its_rolling_checkpoint_its_permanent_set_and_its_final_step
         extra="keep_every_steps = 3\nkeep_steps = [5]\n",
     )
     run = tmp_path / "runs/run"
-    losses: list[torch.Tensor] = []
-
-    # A branch that took the checkpoint at step 8 while the run was still
-    # training, before the run moved past it.
-    def branched_during_the_ninth_step(*arguments: Any) -> torch.Tensor:
-        losses.append(masked_action_cross_entropy(*arguments))
-        if len(losses) == 9:
-            record_branch(
-                tmp_path / "runs/branch", run / "checkpoints/step-00000008.pt"
-            )
-        return losses[-1]
-
-    monkeypatch.setattr(
-        "anthro_chess.training.runner.masked_action_cross_entropy",
-        branched_during_the_ninth_step,
-    )
 
     run_training(load_config(TrainingConfig, path=config), output_directory=run)
 
@@ -2852,7 +2831,6 @@ def test_a_run_keeps_its_rolling_checkpoint_its_permanent_set_and_its_final_step
         "step-00000003.pt",
         "step-00000005.pt",
         "step-00000006.pt",
-        "step-00000008.pt",
         "step-00000009.pt",
     ]
 
@@ -3144,44 +3122,3 @@ def test_a_branch_paused_and_resumed_still_names_its_trunk_checkpoint(
         trunk.checkpoint_path.resolve()
     )
     assert trunk.checkpoint_path.resolve() in protected_checkpoints(runs)
-    assert trunk.checkpoint_path.resolve() in run_protected_checkpoints(runs / "trunk")
-
-
-def test_a_trunk_resumed_past_a_branch_point_keeps_the_checkpoint_it_superseded(
-    tmp_path: Path,
-) -> None:
-    prepared = prepare_pgn(
-        SAMPLE_PGN,
-        tmp_path / "data",
-        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
-    )
-    runs = tmp_path / "runs"
-
-    def config(name: str, steps: int, resume_from: str | Path | None) -> Any:
-        return load_config(
-            TrainingConfig,
-            path=_write_training_config(
-                tmp_path / f"{name}-{steps}-config",
-                normalized=prepared.normalized_path,
-                manifest=prepared.manifest_path,
-                run_name=name,
-                validation=False,
-                steps=steps,
-                checkpoint_every_steps=1,
-                extra="keep_every_steps = 100\n",
-                resume_from=resume_from,
-            ),
-        )
-
-    trunk = run_training(config("trunk", 3, None), output_directory=runs / "trunk")
-    run_training(
-        config("branch", 4, trunk.checkpoint_path), output_directory=runs / "branch"
-    )
-    run_training(config("trunk", 5, "latest"), output_directory=runs / "trunk")
-
-    # Step 3 was the trunk's rolling checkpoint once it resumed, and only the
-    # branch taken from it before the resume keeps it.
-    assert _checkpoint_names(runs / "trunk") == [
-        "step-00000003.pt",
-        "step-00000005.pt",
-    ]

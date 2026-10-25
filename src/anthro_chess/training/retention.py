@@ -18,9 +18,6 @@ from anthro_chess.training.checkpoints import (
     latest_checkpoint_path,
 )
 
-#: Beside a run's checkpoints, one note per run branched from them.
-BRANCHES_DIRECTORY = "branches"
-
 
 @dataclass(frozen=True)
 class RetentionPolicy:
@@ -81,61 +78,6 @@ def _recorded_branch_point(record_path: Path) -> Path | None:
     return source
 
 
-def record_branch(run_path: Path, source: Path) -> None:
-    """Note beside a trunk that the run at ``run_path`` continues from ``source``.
-
-    The note is named for the branch and lives in the trunk's own directory,
-    where ``run_protected_checkpoints`` reads it.
-    """
-
-    # A source outside a run's checkpoints directory is never pruned.
-    if source.parent.name != "checkpoints":
-        return
-    directory = source.parent.parent / BRANCHES_DIRECTORY
-    name = run_path.resolve().name
-    note = directory / name
-    temporary = directory / f".{name}.tmp"
-    try:
-        directory.mkdir(exist_ok=True)
-        temporary.write_text(f"{source.resolve()}\n", encoding="utf-8")
-        temporary.replace(note)
-    except OSError as error:
-        raise CheckpointError(
-            f"cannot record the branch point {source} beside its run: {error}"
-        ) from error
-
-
-def run_protected_checkpoints(run_path: Path) -> frozenset[Path]:
-    """Return the checkpoints of one run that something outside it still reads.
-
-    Only the branches noted beside the run are seen, which is every branch the
-    runner started.
-    """
-
-    protected: set[Path] = set()
-    try:
-        notes = list((run_path / BRANCHES_DIRECTORY).iterdir())
-    except FileNotFoundError:
-        notes = []
-    except OSError as error:
-        raise CheckpointError(
-            f"cannot read the branches of run {run_path}: {error}"
-        ) from error
-    for note in notes:
-        # A note `record_branch` is still writing.
-        if note.name.startswith("."):
-            continue
-        try:
-            protected.add(Path(note.read_text(encoding="utf-8").strip()))
-        except OSError as error:
-            raise CheckpointError(
-                f"cannot read the branch point {note}: {error}"
-            ) from error
-    if (selected := _selected_checkpoint(run_path.parent)) is not None:
-        protected.add(selected)
-    return frozenset(protected)
-
-
 def protected_checkpoints(run_root: Path) -> frozenset[Path]:
     """Return the checkpoints something outside their own run still reads.
 
@@ -149,17 +91,13 @@ def protected_checkpoints(run_root: Path) -> frozenset[Path]:
         for record_path in run_root.glob("*/run.json")
         if (source := _recorded_branch_point(record_path)) is not None
     }
-    if (selected := _selected_checkpoint(run_root)) is not None:
-        protected.add(selected)
-    return frozenset(protected)
-
-
-def _selected_checkpoint(run_root: Path) -> Path | None:
     try:
         selected = resolve_model_selection(ModelRunnerConfig(), run_root=run_root)
     except ModelSelectionError:
-        return None
-    return selected.checkpoint_path.resolve()
+        pass
+    else:
+        protected.add(selected.checkpoint_path.resolve())
+    return frozenset(protected)
 
 
 def remove_checkpoint(path: Path, *, protected: Collection[Path]) -> None:
