@@ -1,0 +1,46 @@
+# The human games the rating ladder's pairings are read against, built once per
+# corpus by `anthro eval ladder-reference`:
+#
+#   anthro eval ladder-reference --config <this file>
+#
+# Every value below decides what the surface measures, so changing one is a new
+# reference and moves the identity pinned at the bottom.
+# `docs/decisions/0100-the-dial-accepts-its-whole-span-and-is-measured-against-humans.md`
+# says why the ladder is read against humans rather than the Elo formula.
+
+reference_id = "lichess-univ-2018-01-2021-06-ladder-reference"
+normalized = "artifacts/lichess-univ-2018-01-2021-06/normalized"
+manifest = "artifacts/lichess-univ-2018-01-2021-06/manifests/manifest.json"
+# Held out from training, and the split the ladder's openings come from.
+split = "test"
+
+# The whole class the ladder's declared 3+0 control belongs to, as its openings
+# are: blitz by the game's own clock, rated in the source's blitz pool.
+speed = "blitz"
+rating_namespace = "lichess_blitz"
+
+# The ratings training covers. Cells above about 2700 are thin and report as
+# such.
+target_ratings = [
+    600, 750, 900, 1050, 1200, 1350, 1500, 1650, 1800,
+    1950, 2100, 2250, 2400, 2550, 2700, 2850, 3000,
+]
+# A ladder seat is one exact rating, so a human stands in for it only from
+# close by.
+rating_window = 25
+
+# The ladder runs no clock, so a game decided by one has no counterpart there.
+# Once the ladder plays timed games every result counts.
+excluded_terminations = ["clock_expiry", "abandonment"]
+
+# Each cell carries its standard error, so this only has to keep that error
+# itself trustworthy: below it a cell reports its count and no score.
+minimum_games = 100
+
+# The snapshot the evaluation pool was cut under. A marked account's results
+# are not its rating's.
+marked_accounts = "../data/marked-accounts/lichess-univ-2018-01-2021-06.txt"
+
+# Recorded from the first successful build so a rebuild on another machine is
+# verified rather than merely plausible.
+expected_surface_sha256 = "a1a966c823301e95c551254f91aeb1fffdf27441d7deed4259276af82e6b7588"

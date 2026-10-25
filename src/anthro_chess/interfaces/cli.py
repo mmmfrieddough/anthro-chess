@@ -434,6 +434,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     freeze_parser.set_defaults(handler=_run_eval_freeze)
 
+    ladder_reference_parser = eval_commands.add_parser(
+        "ladder-reference",
+        help="Count held-out human games into the rating ladder's reference surface.",
+        parents=[_SET_FLAG],
+    )
+    ladder_reference_parser.add_argument(
+        "output",
+        type=Path,
+        nargs="?",
+        help=(
+            "Directory for the reference artifact. Defaults beneath "
+            "ANTHRO_CHESS_DATA_ROOT."
+        ),
+    )
+    ladder_reference_parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Explicit TOML ladder-reference selection.",
+    )
+    ladder_reference_parser.add_argument(
+        "--workers",
+        type=_worker_count,
+        help=(
+            "How many shards to scan at once, or 0 to scan them in this "
+            "process. Defaults to the cores this process may run on."
+        ),
+    )
+    ladder_reference_parser.set_defaults(handler=_run_eval_ladder_reference)
+
     prepare_puzzles_parser = eval_commands.add_parser(
         "prepare-puzzles",
         help="Install the committed external puzzle benchmark artifact.",
@@ -1907,6 +1937,53 @@ def _run_eval_freeze(arguments: argparse.Namespace) -> int:
     print(f"Manifest: {result.manifest_path}")
     print(f"Identity: {result.game_ids_sha256}")
     _print_coverage(result)
+    return 0
+
+
+def _run_eval_ladder_reference(arguments: argparse.Namespace) -> int:
+    from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.evaluation.ladder_reference import (
+        LadderReferenceConfig,
+        LadderReferenceError,
+        build_ladder_reference,
+    )
+    from anthro_chess.evaluation.roots import (
+        LADDER_REFERENCE_ARTIFACT_FIELDS,
+        resolve_artifact_roots,
+    )
+
+    try:
+        resolved = resolve_artifact_roots(
+            load_config(
+                LadderReferenceConfig,
+                path=arguments.config,
+                overrides=arguments.set,
+            ),
+            fields=LADDER_REFERENCE_ARTIFACT_FIELDS,
+            overrides=arguments.set,
+        )
+        output = _data_output_path(arguments.output, resolved.value.reference_id)
+        workers = _available_cores() if arguments.workers is None else arguments.workers
+        result = build_ladder_reference(resolved, output, workers=workers)
+    except (ConfigError, LadderReferenceError) as error:
+        print(f"anthro eval ladder-reference: {error}", file=sys.stderr)
+        return 2
+
+    for name, count in result.scanned.items():
+        print(f"{name.replace('_', ' ')}: {count}")
+    print(f"Reference: {result.path}")
+    print(f"Identity: {result.reference.surface_sha256}")
+    reference = result.reference
+    ratings = reference.target_ratings
+    print("\nHigher-rated score by pairing (games), rows higher, columns lower:")
+    print("      " + "".join(f"{rating:>15}" for rating in ratings[:-1]))
+    for index, higher in enumerate(ratings[1:], 1):
+        cells = []
+        for lower in ratings[:index]:
+            cell = reference.cell(higher, lower)
+            reading = "thin" if cell.score is None else f"{100 * cell.score:.1f}%"
+            cells.append(f"{reading} ({cell.games})".rjust(15))
+        print(f"{higher:>6}" + "".join(cells))
     return 0
 
 
