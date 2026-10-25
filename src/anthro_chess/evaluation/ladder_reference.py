@@ -200,7 +200,9 @@ def load_ladder_reference(
             f"{path} was built as ladder reference version "
             f"{record.get('version')}; expected {LADDER_REFERENCE_VERSION}"
         )
-    observed = _surface_sha256(record["selection"], record["counts"])
+    observed = _surface_sha256(
+        record["reference_id"], record["selection"], record["counts"]
+    )
     if observed != record["surface_sha256"]:
         raise LadderReferenceError(
             f"{path} does not hold the surface it records: expected "
@@ -276,7 +278,7 @@ def _build(
         "marked_accounts_sha256": None if snapshot is None else snapshot.sha256,
     }
     count_record = dict(zip(_COUNT_PLANES, counts, strict=True))
-    identity = _surface_sha256(selection, count_record)
+    identity = _surface_sha256(config.reference_id, selection, count_record)
     if (
         config.expected_surface_sha256 is not None
         and identity != config.expected_surface_sha256
@@ -317,11 +319,13 @@ def _build(
 
 
 def _surface_sha256(
+    reference_id: str,
     selection: Mapping[str, Any],
     counts: Mapping[str, Any],
 ) -> str:
     content = {
         "version": LADDER_REFERENCE_VERSION,
+        "reference_id": reference_id,
         "selection": selection,
         "counts": counts,
     }

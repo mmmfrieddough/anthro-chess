@@ -90,6 +90,8 @@ def corpus(
             game(10, 1650, 1500, "0-1", time_initial_ms=60_000),
             game(11, 1650, 1500, "0-1", source_rating_namespace="fixture_rapid"),
             game(12, 1500, 1510, "1-0"),
+            game(13, 1650, 1500, "0-1", termination_category="abandonment"),
+            game(14, 1650, 1500, "*"),
         ]
         return write_corpus(tmp_path / "corpus", rows, **layout)
 
@@ -115,10 +117,10 @@ def test_a_cell_averages_the_higher_rated_players_score_over_both_colours(
         math.sqrt(as_white[1] ** 2 + as_black[1] ** 2) / 2
     )
     assert result.scanned == {
-        "excluded_termination_games": 1,
+        "excluded_termination_games": 2,
         "marked_games": 0,
-        "selected_games": 9,
-        "split_games": 11,
+        "selected_games": 10,
+        "split_games": 13,
         "surface_games": 6,
     }
 

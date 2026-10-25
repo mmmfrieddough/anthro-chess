@@ -1930,11 +1930,11 @@ digest of the declared selection and those counts, so a rebuild elsewhere is
 verified against the pinned one and a ladder reading can name the reference it
 was read against.
 
-Far-gap human pairings are not a clean target: they are selected toward new and
-provisional accounts, and mis-rated players produce the upsets that fatten the
-far end. The standard error says nothing about that, so a comparison at the far
-end needs a wider allowance than the cell's own error until a per-game rating
-change can identify those players.
+Mis-rated players are not in the standard error. Far-gap human pairings are
+selected toward new and provisional accounts, whose upsets fatten the far end,
+and the grid rating new accounts start at reads low as the higher player at
+every gap. A comparison there needs a wider allowance than the cell's own error
+until a per-game rating change can identify those players.
 
 ### Puzzle Rating Response
 

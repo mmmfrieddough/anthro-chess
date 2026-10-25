@@ -14,8 +14,9 @@ manifest = "artifacts/lichess-univ-2018-01-2021-06/manifests/manifest.json"
 # Held out from training, and the split the ladder's openings come from.
 split = "test"
 
-# The population the ladder's openings and declared control name: blitz by the
-# game's own clock, rated in the source's blitz pool.
+# The population the ladder's openings name: blitz by the game's own clock,
+# rated in the source's blitz pool. That is the whole class the declared 3+0
+# control belongs to rather than that control alone, as the openings are.
 speed = "blitz"
 rating_namespace = "lichess_blitz"
 
@@ -44,4 +45,3 @@ marked_accounts = "../data/marked-accounts/lichess-univ-2018-01-2021-06.txt"
 
 # Recorded from the first successful build so a rebuild on another machine is
 # verified rather than merely plausible.
-expected_surface_sha256 = "f5515e5a87086e9acfd422eb1d039b0aa3b2b1b6e1a308ae2e432391999146e4"
