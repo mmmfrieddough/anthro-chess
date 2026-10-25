@@ -84,12 +84,11 @@ def _recorded_branch_point(record_path: Path) -> Path | None:
 def record_branch(run_path: Path, source: Path) -> None:
     """Note beside a trunk that the run at ``run_path`` continues from ``source``.
 
-    The note lives in the trunk's own directory, named for the branch, so the
-    trunk's rolling deletion reads its branches without parsing every record
-    on the root.
+    The note is named for the branch and lives in the trunk's own directory,
+    where ``run_protected_checkpoints`` reads it.
     """
 
-    # Pruning only ever reaches a run's own checkpoints directory.
+    # A source outside a run's checkpoints directory is never pruned.
     if source.parent.name != "checkpoints":
         return
     directory = source.parent.parent / BRANCHES_DIRECTORY
@@ -123,6 +122,7 @@ def run_protected_checkpoints(run_path: Path) -> frozenset[Path]:
             f"cannot read the branches of run {run_path}: {error}"
         ) from error
     for note in notes:
+        # A note `record_branch` is still writing.
         if note.name.startswith("."):
             continue
         try:
