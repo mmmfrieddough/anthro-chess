@@ -1183,9 +1183,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Remove the checkpoints a run's retention policy no longer keeps.",
         description=(
             "Report, and with --delete remove, every checkpoint below a run's "
-            "latest that its retention policy does not keep. A checkpoint "
-            "another run resumed from, or the default model selection names, "
-            "is kept whatever the policy says."
+            "latest that its retention policy does not keep."
         ),
     )
     prune_parser.add_argument(
@@ -1487,7 +1485,6 @@ def _run_checkpoints_prune(arguments: argparse.Namespace) -> int:
     from anthro_chess.training.checkpoints import CheckpointError
     from anthro_chess.training.retention import (
         plan_pruning,
-        protected_checkpoints,
         remove_checkpoint,
     )
 
@@ -1504,21 +1501,19 @@ def _run_checkpoints_prune(arguments: argparse.Namespace) -> int:
         if arguments.run
         else sorted(path.parent for path in run_root.glob("*/checkpoints"))
     )
-    protected = protected_checkpoints(run_root)
     plans = [
         plan_pruning(
             run,
-            protected=protected,
             keep_every_steps=arguments.keep_every_steps,
             keep_steps=arguments.keep_step,
         )
         for run in runs
     ]
-    reported = [plan for plan in plans if plan.removable or plan.held]
+    reported = [plan for plan in plans if plan.removable]
     width = max((len(plan.run_path.name) for plan in reported), default=0)
     lines = [
         f"{plan.run_path.name:<{width}}  remove {len(plan.removable):>4}  "
-        f"{plan.removable_bytes / 2**30:7.2f} GiB  held {len(plan.held)}"
+        f"{plan.removable_bytes / 2**30:7.2f} GiB"
         for plan in reported
     ]
     lines.extend(
@@ -1532,7 +1527,7 @@ def _run_checkpoints_prune(arguments: argparse.Namespace) -> int:
         try:
             for plan in plans:
                 for path in plan.removable:
-                    remove_checkpoint(path, protected=protected)
+                    remove_checkpoint(path)
         except CheckpointError as error:
             print(f"anthro checkpoints prune: {error}", file=sys.stderr)
             return 2

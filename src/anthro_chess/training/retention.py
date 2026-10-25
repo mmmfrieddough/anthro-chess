@@ -7,11 +7,6 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 
-from anthro_chess.inference.config import ModelRunnerConfig
-from anthro_chess.inference.selection import (
-    ModelSelectionError,
-    resolve_model_selection,
-)
 from anthro_chess.training.checkpoints import (
     CheckpointError,
     checkpoint_step,
@@ -78,33 +73,9 @@ def _recorded_branch_point(record_path: Path) -> Path | None:
     return source
 
 
-def protected_checkpoints(run_root: Path) -> frozenset[Path]:
-    """Return the checkpoints something outside their own run still reads.
+def remove_checkpoint(path: Path) -> None:
+    """Delete one superseded checkpoint."""
 
-    A branch's record names the trunk checkpoint it continues from, and the
-    default model selection can pin a checkpoint by name. Only runs beneath
-    ``run_root`` are seen.
-    """
-
-    protected = {
-        source
-        for record_path in run_root.glob("*/run.json")
-        if (source := _recorded_branch_point(record_path)) is not None
-    }
-    try:
-        selected = resolve_model_selection(ModelRunnerConfig(), run_root=run_root)
-    except ModelSelectionError:
-        pass
-    else:
-        protected.add(selected.checkpoint_path.resolve())
-    return frozenset(protected)
-
-
-def remove_checkpoint(path: Path, *, protected: Collection[Path]) -> None:
-    """Delete one superseded checkpoint unless another reader still needs it."""
-
-    if path.resolve() in protected:
-        return
     try:
         path.unlink(missing_ok=True)
     except OSError as error:
@@ -113,12 +84,10 @@ def remove_checkpoint(path: Path, *, protected: Collection[Path]) -> None:
 
 @dataclass(frozen=True)
 class RunPruning:
-    """What pruning one run to its policy removes, and what it holds back."""
+    """What pruning one run to its policy removes."""
 
     run_path: Path
     removable: tuple[Path, ...] = ()
-    #: Checkpoints the policy would drop that another reader still needs.
-    held: tuple[Path, ...] = ()
     #: Why the run was left alone entirely, when it was.
     skipped: str | None = None
 
@@ -132,7 +101,6 @@ class RunPruning:
 def plan_pruning(
     run_path: Path,
     *,
-    protected: Collection[Path],
     keep_every_steps: int | None = None,
     keep_steps: Collection[int] = (),
 ) -> RunPruning:
@@ -166,10 +134,9 @@ def plan_pruning(
     latest_step = checkpoint_step(latest)
     assert latest_step is not None  # the latest pointer only names valid steps
     removable: list[Path] = []
-    held: list[Path] = []
     for path in sorted(latest.parent.glob("step-*.pt")):
         step = checkpoint_step(path)
         if step is None or step >= latest_step or policy.retains(step):
             continue
-        (held if path.resolve() in protected else removable).append(path)
-    return RunPruning(run_path, removable=tuple(removable), held=tuple(held))
+        removable.append(path)
+    return RunPruning(run_path, removable=tuple(removable))

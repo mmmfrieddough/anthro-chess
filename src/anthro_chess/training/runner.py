@@ -111,7 +111,6 @@ from anthro_chess.training.losses import (
 from anthro_chess.training.retention import (
     RetentionPolicy,
     branch_point,
-    protected_checkpoints,
     remove_checkpoint,
 )
 from anthro_chess.training.schedule import LearningRateSchedule
@@ -1207,7 +1206,7 @@ def _optimize(
                         run_record=run_record,
                     )
                     if superseded is not None and not retention.retains(saved_step):
-                        _discard_superseded(superseded, output_directory)
+                        _discard_superseded(superseded)
                     monitor.charge(
                         time.perf_counter() - checkpoint_started,
                         kind="checkpoint",
@@ -1392,8 +1391,8 @@ def _save_step_checkpoint(
     )
 
 
-def _discard_superseded(path: Path, output_directory: Path) -> None:
-    """Remove the checkpoint a later save replaced, unless another run reads it.
+def _discard_superseded(path: Path) -> None:
+    """Remove the checkpoint a later save replaced.
 
     Called only once the later checkpoint, the latest pointer, and the run
     record all name the later one, so an interruption at any point before this
@@ -1401,9 +1400,7 @@ def _discard_superseded(path: Path, output_directory: Path) -> None:
     """
 
     try:
-        remove_checkpoint(
-            path, protected=protected_checkpoints(output_directory.parent)
-        )
+        remove_checkpoint(path)
     except CheckpointError as error:
         logger.warning("%s; the run continues and leaves it in place", error)
 

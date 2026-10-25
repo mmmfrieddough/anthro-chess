@@ -430,9 +430,9 @@ once the next has landed, `latest.json` names it, and the run record points at
 it. **Permanent** checkpoints are kept for later reading: every multiple of a
 sparse cadence, any steps the run declares (a trunk branched where that cadence
 does not land), and the final step. `TrainingConfig` owns the settings, and a
-run that declares no permanent cadence keeps everything it writes. A checkpoint
-another run's record names as its `resumed_from`, or that the default model
-selection pins, is never deleted.
+run that declares no permanent cadence keeps everything it writes. A rolling
+checkpoint exists only to resume its own run, so a step to branch from or to
+pin as the default model selection has to be a permanent one.
 
 SIGTERM or SIGINT makes stopping a pause rather than a loss: the run finishes
 the optimizer step in flight, saves through the same atomic path, and each
