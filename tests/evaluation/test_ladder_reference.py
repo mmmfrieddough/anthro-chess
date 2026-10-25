@@ -179,13 +179,13 @@ def test_the_identity_is_the_surface_however_the_scan_was_divided(
         _resolved(normalized, manifest), tmp_path / "parallel", workers=2
     )
     pinned = load_ladder_reference(
-        tmp_path / "parallel", expected_surface_sha256=serial.surface_sha256
+        tmp_path / "parallel", expected_surface_sha256=serial.reference.surface_sha256
     )
 
-    assert parallel.surface_sha256 == serial.surface_sha256
+    assert parallel.reference.surface_sha256 == serial.reference.surface_sha256
     assert pinned.identity() == {
         "id": "fixture-reference",
-        "surface_sha256": serial.surface_sha256,
+        "surface_sha256": serial.reference.surface_sha256,
     }
 
 
@@ -206,7 +206,7 @@ def test_a_reference_that_is_not_the_pinned_one_is_refused(
                 normalized,
                 manifest,
                 rating_window=20,
-                expected_surface_sha256=built.surface_sha256,
+                expected_surface_sha256=built.reference.surface_sha256,
             ),
             tmp_path / "narrower",
         )

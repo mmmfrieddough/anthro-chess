@@ -45,3 +45,4 @@ marked_accounts = "../data/marked-accounts/lichess-univ-2018-01-2021-06.txt"
 
 # Recorded from the first successful build so a rebuild on another machine is
 # verified rather than merely plausible.
+expected_surface_sha256 = "a1a966c823301e95c551254f91aeb1fffdf27441d7deed4259276af82e6b7588"

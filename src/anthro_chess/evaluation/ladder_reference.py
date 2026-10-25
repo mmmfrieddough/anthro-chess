@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
@@ -165,7 +166,6 @@ class LadderReferenceResult:
     """What one build wrote and how much of the split reached the surface."""
 
     path: Path
-    surface_sha256: str
     scanned: Mapping[str, int]
     reference: LadderReference
 
@@ -213,7 +213,7 @@ def load_ladder_reference(
             f"{path} is not the reference this selection reads: expected "
             f"{expected_surface_sha256}, observed {observed}"
         )
-    return _reference(record["reference_id"], observed, record)
+    return _reference(record)
 
 
 def _build(
@@ -228,6 +228,8 @@ def _build(
         raise LadderReferenceError(f"source manifest does not exist: {manifest_path}")
     manifest_bytes = manifest_path.read_bytes()
     source_manifest = json.loads(manifest_bytes)
+    if not isinstance(source_manifest, dict):
+        raise LadderReferenceError("source manifest must contain a JSON object")
     validate_manifest_compatibility(source_manifest, manifest_path)
     try:
         snapshot = snapshot_for_corpus(
@@ -248,18 +250,13 @@ def _build(
         workers,
     )
     rule = _ScanRule.of(config, marked)
-    size = len(config.target_ratings)
-    counts = [[[0] * size for _ in range(size)] for _ in _COUNT_PLANES]
-    scanned: dict[str, int] = {}
+    counts: Counter[tuple[int, int, int]] = Counter()
+    scanned: Counter[str] = Counter()
     for shard in _scan_shards(source_paths, rule, workers):
-        for plane, shard_plane in zip(counts, shard.counts, strict=True):
-            for row, shard_row in zip(plane, shard_plane, strict=True):
-                for index, count in enumerate(shard_row):
-                    row[index] += count
-        for name, count in shard.tallies.items():
-            scanned[name] = scanned.get(name, 0) + count
+        counts.update(shard.counts)
+        scanned.update(shard.tallies)
 
-    if not scanned.get("surface_games"):
+    if not scanned["surface_games"]:
         raise LadderReferenceError(
             f"no {config.speed} game of the {config.split} split in "
             f"{config.rating_namespace} has both players on the rating grid"
@@ -277,7 +274,14 @@ def _build(
         "minimum_games": config.minimum_games,
         "marked_accounts_sha256": None if snapshot is None else snapshot.sha256,
     }
-    count_record = dict(zip(_COUNT_PLANES, counts, strict=True))
+    size = len(config.target_ratings)
+    count_record = {
+        name: [
+            [counts[(outcome, white, black)] for black in range(size)]
+            for white in range(size)
+        ]
+        for outcome, name in enumerate(_COUNT_PLANES)
+    }
     identity = _surface_sha256(config.reference_id, selection, count_record)
     if (
         config.expected_surface_sha256 is not None
@@ -312,9 +316,8 @@ def _build(
     )
     return LadderReferenceResult(
         path=path,
-        surface_sha256=identity,
         scanned=tallies,
-        reference=_reference(config.reference_id, identity, record),
+        reference=_reference(record),
     )
 
 
@@ -334,13 +337,9 @@ def _surface_sha256(
     ).hexdigest()
 
 
-def _reference(
-    reference_id: str,
-    surface_sha256: str,
-    record: Mapping[str, Any],
-) -> LadderReference:
-    ratings = tuple(int(rating) for rating in record["selection"]["target_ratings"])
-    minimum = int(record["selection"]["minimum_games"])
+def _reference(record: Mapping[str, Any]) -> LadderReference:
+    ratings = tuple(record["selection"]["target_ratings"])
+    minimum = record["selection"]["minimum_games"]
     white_wins, draws, black_wins = (record["counts"][plane] for plane in _COUNT_PLANES)
     cells: dict[tuple[int, int], ReferenceCell] = {}
     for higher in range(len(ratings)):
@@ -377,8 +376,8 @@ def _reference(
                 standard_error=standard_error,
             )
     return LadderReference(
-        reference_id=reference_id,
-        surface_sha256=surface_sha256,
+        reference_id=record["reference_id"],
+        surface_sha256=record["surface_sha256"],
         target_ratings=ratings,
         cells=cells,
     )
@@ -393,7 +392,7 @@ def _colour_score(wins: int, draws: int, games: int) -> tuple[float, float]:
 
     score = (wins + draws / 2) / games
     second_moment = (wins + draws / 4) / games
-    variance = max(second_moment - score**2, 0.0) * games / (games - 1)
+    variance = (second_moment - score**2) * games / (games - 1)
     return score, math.sqrt(variance / games)
 
 
@@ -407,7 +406,6 @@ class _ScanRule:
     excluded_terminations: frozenset[str]
     marked_digests: frozenset[int]
     grid_index: Mapping[int, int]
-    size: int
 
     @classmethod
     def of(cls, config: LadderReferenceConfig, marked: frozenset[int]) -> _ScanRule:
@@ -425,13 +423,12 @@ class _ScanRule:
                 for index, target in enumerate(config.target_ratings)
                 for rating in range(target - window, target + window + 1)
             },
-            size=len(config.target_ratings),
         )
 
 
 @dataclass(frozen=True)
 class _ShardCounts:
-    counts: list[list[list[int]]]
+    counts: Counter[tuple[int, int, int]]
     tallies: dict[str, int]
 
 
@@ -464,7 +461,7 @@ def _scan_shard(path: Path) -> _ShardCounts:
     rule = _SCAN_RULE
     if rule is None:  # pragma: no cover - the initializer precedes every task
         raise LadderReferenceError("a reference scan worker was started without a rule")
-    counts = [[[0] * rule.size for _ in range(rule.size)] for _ in _COUNT_PLANES]
+    counts: Counter[tuple[int, int, int]] = Counter()
     tallies = {
         "split_games": 0,
         "selected_games": 0,
@@ -518,6 +515,6 @@ def _scan_shard(path: Path) -> _ShardCounts:
             black = rule.grid_index.get(black_rating)
             if white is None or black is None or white == black:
                 continue
-            counts[_OUTCOMES[result]][white][black] += 1
+            counts[(_OUTCOMES[result], white, black)] += 1
             tallies["surface_games"] += 1
     return _ShardCounts(counts, tallies)

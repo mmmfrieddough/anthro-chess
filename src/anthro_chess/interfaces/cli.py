@@ -1972,16 +1972,14 @@ def _run_eval_ladder_reference(arguments: argparse.Namespace) -> int:
     for name, count in result.scanned.items():
         print(f"{name.replace('_', ' ')}: {count}")
     print(f"Reference: {result.path}")
-    print(f"Identity: {result.surface_sha256}")
+    print(f"Identity: {result.reference.surface_sha256}")
     reference = result.reference
     ratings = reference.target_ratings
     print("\nHigher-rated score by pairing (games), rows higher, columns lower:")
     print("      " + "".join(f"{rating:>15}" for rating in ratings[:-1]))
-    for higher in ratings[1:]:
+    for index, higher in enumerate(ratings[1:], 1):
         cells = []
-        for lower in ratings:
-            if lower >= higher:
-                break
+        for lower in ratings[:index]:
             cell = reference.cell(higher, lower)
             reading = "thin" if cell.score is None else f"{100 * cell.score:.1f}%"
             cells.append(f"{reading} ({cell.games})".rjust(15))
