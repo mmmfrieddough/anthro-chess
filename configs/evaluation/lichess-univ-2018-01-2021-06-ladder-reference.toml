@@ -14,21 +14,19 @@ manifest = "artifacts/lichess-univ-2018-01-2021-06/manifests/manifest.json"
 # Held out from training, and the split the ladder's openings come from.
 split = "test"
 
-# The population the ladder's openings name: blitz by the game's own clock,
-# rated in the source's blitz pool. That is the whole class the declared 3+0
-# control belongs to rather than that control alone, as the openings are.
+# The whole class the ladder's declared 3+0 control belongs to, as its openings
+# are: blitz by the game's own clock, rated in the source's blitz pool.
 speed = "blitz"
 rating_namespace = "lichess_blitz"
 
-# The ratings training covers, every 150 points. Above about 2700 the cells
-# thin out and report as such rather than being filled.
+# The ratings training covers. Cells above about 2700 are thin and report as
+# such.
 target_ratings = [
     600, 750, 900, 1050, 1200, 1350, 1500, 1650, 1800,
     1950, 2100, 2250, 2400, 2550, 2700, 2850, 3000,
 ]
 # A ladder seat is one exact rating, so a human stands in for it only from
-# close by. Binning to the nearest grid rating instead let a nominal gap of 150
-# span 0 to 300 and read 61.7% where this window reads 66.8%.
+# close by.
 rating_window = 25
 
 # The ladder runs no clock, so a game decided by one has no counterpart there.

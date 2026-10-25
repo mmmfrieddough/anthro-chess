@@ -1,21 +1,14 @@
 """The human games a rating ladder's pairings are read against.
 
 For each pair of ratings on a grid, how often the higher-rated human scores in
-held-out games. A ladder seat is asked for one exact rating, so a human only
-stands in for a grid rating when their own rating lies within a narrow window
-of it: binning each player to the nearest grid rating instead lets a nominal
-gap span twice the grid step and flattens the curve the ladder is compared to.
-
-The surface is kept over both ratings rather than pooled by gap, because a
-pooled curve is dominated by the middle of the range and hides where a model
-stops separating players. Every pairing a ladder plays is played from both
-sides, so each cell averages the higher-rated player's score as white and as
-black rather than taking whatever colour mix the humans happened to play.
+held-out games. A ladder seat plays at one exact rating, so a human stands in
+for a grid rating only when their own rating lies within a narrow window of it.
+Each cell averages the higher-rated player's score as white and as black, since
+a ladder plays every pairing from both sides.
 
 The artifact stores counts, and every score is derived from them on load. Its
 identity is a digest of the declared selection and those counts, so two
-machines building it from one corpus agree on it and a ladder reading can name
-the reference it was read against.
+machines building it from one corpus agree on it.
 """
 
 from __future__ import annotations
